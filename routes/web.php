@@ -29,4 +29,11 @@ Route::middleware(['auth'])->group(function () {
             ),
         )
         ->name('two-factor.show');
+
+    // Route cho quản lý danh mục
+    Volt::route('admin/categories', 'admin.categories.index')->name('admin.categories');
+    
+    // Route cho quản lý bài viết
+    Volt::route('admin/posts', 'admin.posts.index')->name('admin.posts');
 });
+
