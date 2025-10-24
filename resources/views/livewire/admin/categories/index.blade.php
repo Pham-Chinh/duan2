@@ -31,8 +31,14 @@ class extends Component
     #[Url(as: 'q', history: true)]
     public string $searchQuery = '';
 
+    // --- Sorting Properties ---
+    #[Url(as: 'sort', history: true)]
+    public string $sortField = 'name';
+    #[Url(as: 'dir', history: true)]
+    public string $sortDirection = 'asc';
+
     // --- Data Properties ---
-    public EloquentCollection $allCategories; // Chứa tất cả categories đã sort theo tên
+    public EloquentCollection $allCategories; // Chứa tất cả categories
 
     // --- Post Viewing Modal ---
     public ?Category $viewingCategory = null;
@@ -41,21 +47,69 @@ class extends Component
 
     // --- Computed Properties ---
 
-    // Lấy danh sách categories đã lọc theo search (lọc theo tên)
+    // Lấy danh sách categories đã lọc theo search và sắp xếp
     public function filteredCategories(): EloquentCollection
     {
-        if (empty(trim($this->searchQuery))) {
-            return $this->allCategories; // Trả về tất cả nếu không search
-        }
+        $categories = $this->allCategories;
+        
+        // Lọc theo search
+        if (!empty(trim($this->searchQuery))) {
         $searchTerm = strtolower(trim($this->searchQuery));
-        // Chỉ lọc theo tên của chính category đó
-        return $this->allCategories->filter(function ($category) use ($searchTerm) {
+            $categories = $categories->filter(function ($category) use ($searchTerm) {
              return Str::contains(strtolower($category->name), $searchTerm);
         });
     }
 
+        // Áp dụng sắp xếp
+        return $this->applySorting($categories);
+    }
+    
+    // Áp dụng sắp xếp cho collection
+    private function applySorting(EloquentCollection $categories): EloquentCollection
+    {
+        $direction = $this->sortDirection === 'asc' ? 1 : -1;
+        
+        return $categories->sort(function ($a, $b) use ($direction) {
+            $valueA = $this->getSortValue($a);
+            $valueB = $this->getSortValue($b);
+            
+            if ($valueA === $valueB) return 0;
+            return ($valueA < $valueB ? -1 : 1) * $direction;
+        })->values();
+    }
+    
+    // Lấy giá trị để sort theo field
+    private function getSortValue($category)
+    {
+        switch ($this->sortField) {
+            case 'name':
+                return strtolower($category->name);
+            case 'parent':
+                return strtolower($category->parent?->name ?? '');
+            case 'posts_count':
+                return $category->posts_count ?? 0;
+            case 'created_at':
+                return $category->created_at->timestamp;
+            default:
+                return strtolower($category->name);
+        }
+    }
+    
+    // Xử lý sắp xếp khi click vào cột
+    public function sortBy(string $field): void
+    {
+        if ($this->sortField === $field) {
+            // Đổi hướng nếu click vào cột đang sort
+            $this->sortDirection = $this->sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            // Sort mới theo cột khác
+            $this->sortField = $field;
+            $this->sortDirection = 'asc';
+        }
+    }
+
     // Lấy danh sách options cho dropdown - CHỈ DANH MỤC GỐC (2 cấp)
-    public function categoryOptions(): BaseCollection
+        public function categoryOptions(): BaseCollection
     {
         $options = new BaseCollection();
         // CHỈ lấy danh mục gốc (parent_id = null) để tạo danh mục con
@@ -85,13 +139,12 @@ class extends Component
     public function mount(): void { $this->loadCategories(); }
 
     // --- Core Logic Methods ---
-    // Load categories - Sort theo tên
+    // Load categories - Không sort, sẽ sort động khi hiển thị
     public function loadCategories(): void
     {
-        // Load parent để hiển thị tên cha, đếm posts, sort theo tên
+        // Load parent để hiển thị tên cha, đếm posts
         $this->allCategories = Category::with(['parent'])
             ->withCount('posts')
-            ->orderBy('name', 'asc')
             ->get();
     }
 
@@ -232,101 +285,203 @@ class extends Component
 {{-- Bắt đầu View --}}
 <div class="space-y-6 p-6">
 
-    {{-- Header --}}
-    <header class="flex flex-col space-y-4 md:flex-row md:items-center md:justify-between md:space-y-0">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">
+    {{-- Header với gradient đẹp --}}
+    <header class="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 p-8 shadow-xl">
+        <div class="relative z-10 flex flex-col space-y-4 md:flex-row md:items-center md:justify-between md:space-y-0">
+            <div class="flex items-center gap-4">
+                <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/20 backdrop-blur-sm shadow-lg">
+                    <svg class="h-10 w-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="text-3xl font-bold text-white drop-shadow-lg">
             Quản lý Danh mục
         </h1>
+                    <p class="text-sm text-white/80 mt-1">Quản lý danh mục sản phẩm của bạn</p>
+                </div>
+            </div>
+        </div>
+        {{-- Decorative elements --}}
+        <div class="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10 blur-3xl"></div>
+        <div class="absolute -bottom-10 -left-10 h-40 w-40 rounded-full bg-white/10 blur-3xl"></div>
     </header>
 
-    {{-- Alert Messages --}}
+    {{-- Alert Messages với animation --}}
     <div class="space-y-3">
         @if (session('success'))
-            <div class="rounded-md bg-green-50 p-4 dark:bg-green-900/30">
-                <div class="flex"><div class="flex-shrink-0"><svg class="h-5 w-5 text-green-400 dark:text-green-300" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" /></svg></div><div class="ml-3"><p class="text-sm font-medium text-green-800 dark:text-green-200">{{ session('success') }}</p></div></div>
+            <div class="animate-in slide-in-from-top duration-500 rounded-xl bg-gradient-to-r from-green-50 to-emerald-50 p-5 shadow-lg border-l-4 border-green-500 dark:from-green-900/40 dark:to-emerald-900/40">
+                <div class="flex items-center gap-3">
+                    <div class="flex-shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-green-500 shadow-md">
+                        <svg class="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-base font-bold text-green-900 dark:text-green-100">Thành công!</p>
+                        <p class="text-sm text-green-700 dark:text-green-200">{{ session('success') }}</p>
+                    </div>
+                </div>
             </div>
         @endif
         @if (session('error'))
-             <div class="rounded-md bg-red-50 p-4 dark:bg-red-900/30">
-                <div class="flex"><div class="flex-shrink-0"><svg class="h-5 w-5 text-red-400 dark:text-red-300" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" /></svg></div><div class="ml-3"><p class="text-sm font-medium text-red-800 dark:text-red-200">{{ session('error') }}</p></div></div>
+            <div class="animate-in slide-in-from-top duration-500 rounded-xl bg-gradient-to-r from-red-50 to-pink-50 p-5 shadow-lg border-l-4 border-red-500 dark:from-red-900/40 dark:to-pink-900/40">
+                <div class="flex items-center gap-3">
+                    <div class="flex-shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-red-500 shadow-md">
+                        <svg class="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="text-base font-bold text-red-900 dark:text-red-100">Lỗi!</p>
+                        <p class="text-sm text-red-700 dark:text-red-200">{{ session('error') }}</p>
+                    </div>
+                </div>
             </div>
         @endif
     </div>
 
-    {{-- Action Bar: Search & Add Buttons (Không đổi) --}}
-    <div class="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-700 dark:bg-gray-800
-            flex flex-nowrap items-center gap-4">
-  <!-- Nhóm nút -->
-  <div class="flex flex-shrink-0 items-center space-x-2">
-    <x-button wire:click="openAddRootModal">
-      <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" /></svg>
-      Thêm Mục Gốc
-    </x-button>
+    {{-- Action Bar với gradient đẹp --}}
+    <div class="rounded-2xl border-2 border-transparent bg-gradient-to-r from-white via-indigo-50 to-purple-50 p-5 shadow-xl dark:from-zinc-800 dark:via-indigo-950 dark:to-purple-950 flex flex-wrap items-center gap-4">
+        <!-- Nhóm nút với gradient -->
+        <div class="flex flex-shrink-0 items-center gap-3">
+            <button 
+                wire:click="openAddRootModal"
+                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-blue-600 hover:to-indigo-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
+            >
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
+                </svg>
+                <span>Thêm Mục Gốc</span>
+            </button>
 
-    <x-button wire:click="openAddChildModal">
-      <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10.5v6m3-3H9m4.06-7.19-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" /></svg>
-      Thêm Mục Con
-    </x-button>
+            <button 
+                wire:click="openAddChildModal"
+                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-500 to-pink-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-purple-600 hover:to-pink-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
+            >
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10.5v6m3-3H9m4.06-7.19-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                </svg>
+                <span>Thêm Mục Con</span>
+            </button>
   </div>
 
-  <!-- Thanh tìm kiếm sát bên phải nhóm nút -->
- <!-- Thanh tìm kiếm với icon ở mép phải -->
-<div class="relative flex-1 min-w-[260px]">
+        <!-- Thanh tìm kiếm với gradient border -->
+        <div class="relative flex-1 min-w-[280px]">
+            <div class="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 opacity-20 blur-sm"></div>
   <input
     type="search"
     wire:model.live.debounce.300ms="searchQuery"
-    placeholder="Tìm kiếm tên danh mục..."
-    class="block w-full appearance-none rounded-full border border-gray-300 bg-white py-2 pl-4 pr-16 shadow-sm
-           focus:border-indigo-500 focus:ring-indigo-500
-           dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:placeholder-gray-400
-           dark:focus:border-indigo-500 dark:focus:ring-indigo-500 sm:text-sm"
-  />
+                placeholder="🔍 Tìm kiếm tên danh mục..."
+                class="relative block w-full appearance-none rounded-full border-2 border-gray-200 bg-white py-3 pl-6 pr-16 shadow-md text-sm font-medium
+                       focus:border-transparent focus:ring-4 focus:ring-purple-200
+                       dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:placeholder-gray-400
+                       dark:focus:ring-purple-900 transition-all duration-300"
+            />
 
-  <!-- Icon/nút tìm kiếm ở bên phải -->
+            <!-- Icon tìm kiếm gradient -->
   <button
     type="button"
     aria-label="Tìm kiếm"
-    wire:click="performSearch"
-    class="absolute right-1 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center
-           rounded-full bg-red-600 text-white shadow-md ring-2 ring-white
-           hover:bg-red-700 active:scale-95 transition"
-  >
-    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-      <path fill-rule="evenodd"
-            d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-            clip-rule="evenodd" />
+                class="absolute right-2 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-r from-red-500 to-pink-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 active:scale-95"
+            >
+                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
     </svg>
   </button>
 </div>
-
 </div>
 
 
 
 
 
-    {{-- SỬA LẠI: Một bảng duy nhất, bỏ thụt lề, đúng cột bố yêu cầu --}}
-    <div class="overflow-hidden rounded-lg border border-gray-200 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+    {{-- Bảng với gradient header đẹp --}}
+    <div class="overflow-hidden rounded-2xl border-2 border-gray-200 shadow-2xl dark:border-gray-700 backdrop-blur-sm">
         <div class="overflow-x-auto">
             <table class="w-full table-auto">
-                <thead class="bg-gray-50 dark:bg-gray-700/50">
+                <thead class="bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white">
                     <tr>
-                        {{-- Cột Tên danh mục (CON) --}}
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300">Tên danh mục</th>
-                        {{-- Cột Danh mục gốc (CHA) --}}
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300">Danh mục gốc</th>
-                        {{-- Cột Bài viết --}}
-                        <th scope="col" class="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 whitespace-nowrap">Bài viết</th>
-                        {{-- Cột Ngày tạo --}}
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 whitespace-nowrap">Ngày tạo</th>
-                        {{-- Cột Hành động --}}
-                        <th scope="col" class="px-6 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-300 whitespace-nowrap">Hành động</th>
+                        {{-- Cột Tên danh mục - Có Sort --}}
+                        <th scope="col" class="px-6 py-4 text-left">
+                            <button wire:click="sortBy('name')" class="group inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-white hover:text-yellow-200 transition-colors">
+                                <span>Tên danh mục</span>
+                                <span class="inline-flex flex-col -space-y-1">
+                                    @if($sortField === 'name' && $sortDirection === 'asc')
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @elseif($sortField === 'name' && $sortDirection === 'desc')
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @else
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @endif
+                                </span>
+                            </button>
+                        </th>
+                        {{-- Cột Danh mục gốc - Có Sort --}}
+                        <th scope="col" class="px-6 py-4 text-left">
+                            <button wire:click="sortBy('parent')" class="group inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-white hover:text-yellow-200 transition-colors">
+                                <span>Danh mục gốc</span>
+                                <span class="inline-flex flex-col -space-y-1">
+                                    @if($sortField === 'parent' && $sortDirection === 'asc')
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @elseif($sortField === 'parent' && $sortDirection === 'desc')
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @else
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @endif
+                                </span>
+                            </button>
+                        </th>
+                        {{-- Cột Bài viết - Có Sort --}}
+                        <th scope="col" class="px-4 py-4 text-center whitespace-nowrap">
+                            <button wire:click="sortBy('posts_count')" class="group inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-white hover:text-yellow-200 transition-colors">
+                                <span>Bài viết</span>
+                                <span class="inline-flex flex-col -space-y-1">
+                                    @if($sortField === 'posts_count' && $sortDirection === 'asc')
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @elseif($sortField === 'posts_count' && $sortDirection === 'desc')
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @else
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @endif
+                                </span>
+                            </button>
+                        </th>
+                        {{-- Cột Ngày tạo - Có Sort --}}
+                        <th scope="col" class="px-6 py-4 text-left whitespace-nowrap">
+                            <button wire:click="sortBy('created_at')" class="group inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-white hover:text-yellow-200 transition-colors">
+                                <span>Ngày tạo</span>
+                                <span class="inline-flex flex-col -space-y-1">
+                                    @if($sortField === 'created_at' && $sortDirection === 'asc')
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @elseif($sortField === 'created_at' && $sortDirection === 'desc')
+                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @else
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
+                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                    @endif
+                                </span>
+                            </button>
+                        </th>
+                        {{-- Cột Hành động - Không Sort --}}
+                        <th scope="col" class="px-6 py-4 text-right text-xs font-bold uppercase tracking-wider text-white whitespace-nowrap">Hành động</th>
                     </tr>
                 </thead>
-                <tbody class="bg-white dark:bg-gray-800">
+                <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700">
                     {{-- Lặp qua $displayCategories (đã lọc, sort theo tên) --}}
                     @forelse ($displayCategories as $category)
-                         <tr wire:key="cat-{{ $category->id }}" class="border-b border-gray-200 last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/50">
+                         <tr wire:key="cat-{{ $category->id }}" class="transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50 hover:via-purple-50 hover:to-pink-50 dark:hover:from-indigo-950/30 dark:hover:via-purple-950/30 dark:hover:to-pink-950/30 hover:shadow-md">
                              {{-- Cột Tên danh mục (CON) --}}
                              <td class="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">
                                  @if($category->parent_id === null)
@@ -334,7 +489,7 @@ class extends Component
                                      <span class="text-gray-400">----</span>
                                  @else
                                      {{-- Nếu là danh mục con, hiển thị tên --}}
-                                     {{ $category->name }}
+                                 {{ $category->name }}
                                  @endif
                              </td>
                              {{-- Cột Danh mục gốc (CHA) --}}
@@ -360,8 +515,8 @@ class extends Component
                              {{-- Cột Hành động --}}
                              <td class="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
                                  <div class="flex items-center justify-end gap-1">
-                                     <x-button wire:click="edit({{ $category->id }})" size="sm" icon="pencil-square" title="Sửa"/>
-                                     <x-button wire:click="delete({{ $category->id }})" wire:confirm="Xóa '{{ $category->name }}'? Không thể xóa nếu có con hoặc bài viết." variant="danger" size="sm" icon="trash" title="Xóa"/>
+                                 <x-button wire:click="edit({{ $category->id }})" size="sm" icon="pencil-square" title="Sửa"/>
+                                 <x-button wire:click="delete({{ $category->id }})" wire:confirm="Xóa '{{ $category->name }}'? Không thể xóa nếu có con hoặc bài viết." variant="danger" size="sm" icon="trash" title="Xóa"/>
                                  </div>
                              </td>
                          </tr>
@@ -376,7 +531,7 @@ class extends Component
 
    {{-- Add/Edit Modal - HIỂN THỊ GIỮA, NÚT MÀU --}}
     {{-- Add/Edit Modal - POPUP GIỮA MÀN HÌNH --}}
-@if ($showAddEditModal)
+    @if ($showAddEditModal)
     <div x-data="{ showModal: @entangle('showAddEditModal').live }" 
          x-show="showModal" 
          x-on:keydown.escape.window="showModal = false; @this.call('closeAddEditModal')"
@@ -437,35 +592,35 @@ class extends Component
                                 @enderror
                             </div>
                             
-                            {{-- Trường Danh mục Cha --}}
-                            @if ($isAddingChild || $editingCategory)
+                            {{-- Trường Danh mục Cha - CHỈ hiển thị khi thêm/sửa danh mục CON --}}
+                            @if ($isAddingChild)
                                 <div>
                                     <label for="modal-parentId" class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        {{ ($isAddingChild && !$editingCategory) ? 'Chọn Danh mục Cha *' : 'Danh mục cha' }}
+                                        {{ !$editingCategory ? 'Chọn Danh mục Cha *' : 'Danh mục cha' }}
                                     </label>
                                     <select 
                                         id="modal-parentId" 
                                         wire:model="parentId" 
-                                        @if($isAddingChild && !$editingCategory) required @endif
+                                        @if(!$editingCategory) required @endif
                                         class="block w-full rounded-md border border-gray-300 px-4 py-3 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:focus:border-indigo-500 dark:focus:ring-indigo-500 sm:text-sm"
                                     >
-                                        @if($isAddingChild && !$editingCategory)
-                                            <option value="" selected>-- Vui lòng chọn --</option>
-                                        @else
-                                            <option value="">— Danh mục gốc —</option>
-                                        @endif
+                                        @if(!$editingCategory)
+                                         <option value="" selected>-- Vui lòng chọn --</option>
+                                     @else
+                                         <option value="">— Danh mục gốc —</option>
+                                     @endif
                                         
-                                        @foreach ($categoryOptions as $categoryOption)
-                                            <option value="{{ $categoryOption->id }}">
+                                    @foreach ($categoryOptions as $categoryOption)
+                                        <option value="{{ $categoryOption->id }}">
                                                 {{ $categoryOption->display_name }}
-                                            </option>
-                                        @endforeach
-                                    </select>
+                                        </option>
+                                    @endforeach
+                                </select>
                                     @error('parentId') 
                                         <p class="mt-2 text-sm text-red-600 dark:text-red-400">{{ $message }}</p> 
                                     @enderror
-                                </div>
-                            @endif
+                            </div>
+                        @endif
                         </div>
                     </div>
                     
@@ -497,9 +652,9 @@ class extends Component
                     </div>
                 </form>
             </div>
+            </div>
         </div>
-    </div>
-@endif
+    @endif
     {{-- View Posts Modal (Không đổi) --}}
     @if ($viewingCategory)
         <div x-data="{ showPosts: @entangle('viewingCategory').live }" x-show="showPosts"
