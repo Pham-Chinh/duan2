@@ -42,9 +42,9 @@
                     <flux:navlist.item 
                         icon="layout-grid" 
                         :href="route('admin.posts')" 
-                        :current="request()->routeIs('admin.posts')" 
+                        :current="request()->routeIs('admin.posts*')" 
                         wire:navigate
-                        class="text-gray-800 dark:text-gray-100 font-medium hover:bg-pink-100 dark:hover:bg-pink-900 transition-all duration-300 hover:translate-x-1 rounded-lg {{ request()->routeIs('admin.posts') ? 'bg-pink-200 dark:bg-pink-800 text-pink-900 dark:text-white shadow-md font-semibold' : '' }}"
+                        class="text-gray-800 dark:text-gray-100 font-medium hover:bg-cyan-100 dark:hover:bg-cyan-900 transition-all duration-300 hover:translate-x-1 rounded-lg {{ request()->routeIs('admin.posts*') ? 'bg-cyan-200 dark:bg-cyan-800 text-cyan-900 dark:text-white shadow-md font-semibold' : '' }}"
                     >
                         {{ __('Quản lý Bài viết') }}
                     </flux:navlist.item>
@@ -180,6 +180,10 @@
 
         {{ $slot }}
 
+        {{-- Toast Notification --}}
+        <x-toast-notification />
+
         @fluxScripts
+        @stack('scripts')
     </body>
 </html>

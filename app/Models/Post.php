@@ -11,13 +11,20 @@
     {
         use HasFactory;
 
-        protected $fillable = [
-            'title',
-            'slug',
-            'content',
-            'user_id',
-            'category_id',
-        ];
+    protected $fillable = [
+        'title',
+        'slug',
+        'content',
+        'user_id',
+        'category_id',
+        'banner',
+        'gallery',
+        'status',
+    ];
+    
+    protected $casts = [
+        'gallery' => 'array', // Cast JSON to array
+    ];
 
         // Tự động tạo slug khi tạo/cập nhật
         protected static function boot()

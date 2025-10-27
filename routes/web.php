@@ -35,5 +35,9 @@ Route::middleware(['auth'])->group(function () {
     
     // Route cho quản lý bài viết
     Volt::route('admin/posts', 'admin.posts.index')->name('admin.posts');
+    Volt::route('admin/posts/create', 'admin.posts.create')->name('admin.posts.create');
+    Volt::route('admin/posts/{id}', 'admin.posts.show')->name('admin.posts.show');
+    Volt::route('admin/posts/{id}/edit', 'admin.posts.edit')->name('admin.posts.edit');
 });
+
 

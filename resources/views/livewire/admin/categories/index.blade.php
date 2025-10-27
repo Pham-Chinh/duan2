@@ -3,6 +3,7 @@
 use Livewire\Volt\Component;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Rule;
+use Livewire\WithPagination;
 use App\Models\Category;
 use App\Models\Post;
 use Illuminate\Support\Collection as BaseCollection;
@@ -12,10 +13,14 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Url;
 use Livewire\Attributes\Title;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 
 new #[Layout('components.layouts.app')] #[Title('Quản lý Danh mục')]
 class extends Component
 {
+    use WithPagination;
     // --- Form Properties ---
     #[Rule('required|string|min:3|max:255')]
     public string $name = '';
@@ -37,8 +42,27 @@ class extends Component
     #[Url(as: 'dir', history: true)]
     public string $sortDirection = 'asc';
 
-    // --- Data Properties ---
-    public EloquentCollection $allCategories; // Chứa tất cả categories
+    // --- Pagination ---
+    #[Url(as: 'per_page', history: true)]
+    public int $perPage = 5;
+    
+    /**
+     * Update số mục mỗi trang
+     */
+    public function updatedPerPage(): void
+    {
+        $this->resetPage();
+    }
+
+    // --- Filter Properties ---
+    #[Url(as: 'type', history: true)]
+    public string $filterType = 'all'; // all, root, child
+    #[Url(as: 'visible', history: true)]
+    public string $filterVisible = 'all'; // all, visible, hidden
+    #[Url(as: 'posts', history: true)]
+    public string $filterPosts = 'all'; // all, has_posts, no_posts
+    #[Url(as: 'date', history: true)]
+    public string $filterDate = 'all'; // all, today, last_7_days, last_30_days, older
 
     // --- Post Viewing Modal ---
     public ?Category $viewingCategory = null;
@@ -47,55 +71,90 @@ class extends Component
 
     // --- Computed Properties ---
 
-    // Lấy danh sách categories đã lọc theo search và sắp xếp
-    public function filteredCategories(): EloquentCollection
+    /**
+     * Lấy danh sách categories đã lọc và paginate
+     * SỬ DỤNG QUERY BUILDER để tối ưu performance
+     */
+    public function filteredCategories()
     {
-        $categories = $this->allCategories;
+        $query = Category::with(['parent'])->withCount('posts');
         
-        // Lọc theo search
+        // Lọc theo loại (gốc/con)
+        if ($this->filterType === 'root') {
+            $query->whereNull('parent_id');
+        } elseif ($this->filterType === 'child') {
+            $query->whereNotNull('parent_id');
+        }
+        
+        // Lọc theo trạng thái hiển thị
+        if ($this->filterVisible === 'visible') {
+            $query->where('is_visible', true);
+        } elseif ($this->filterVisible === 'hidden') {
+            $query->where('is_visible', false);
+        }
+        
+        // Lọc theo bài viết (sử dụng has/doesntHave relationship)
+        if ($this->filterPosts === 'has_posts') {
+            $query->has('posts');
+        } elseif ($this->filterPosts === 'no_posts') {
+            $query->doesntHave('posts');
+        }
+        
+        // Lọc theo search (sử dụng LIKE trong SQL)
         if (!empty(trim($this->searchQuery))) {
-        $searchTerm = strtolower(trim($this->searchQuery));
-            $categories = $categories->filter(function ($category) use ($searchTerm) {
-             return Str::contains(strtolower($category->name), $searchTerm);
-        });
-    }
+            $searchTerm = trim($this->searchQuery);
+            $query->where('name', 'like', '%' . $searchTerm . '%');
+        }
 
-        // Áp dụng sắp xếp
-        return $this->applySorting($categories);
-    }
-    
-    // Áp dụng sắp xếp cho collection
-    private function applySorting(EloquentCollection $categories): EloquentCollection
-    {
-        $direction = $this->sortDirection === 'asc' ? 1 : -1;
+        // Lọc theo ngày tạo
+        if ($this->filterDate === 'today') {
+            $query->whereDate('created_at', today());
+        } elseif ($this->filterDate === 'last_7_days') {
+            $query->where('created_at', '>=', now()->subDays(7));
+        } elseif ($this->filterDate === 'last_30_days') {
+            $query->where('created_at', '>=', now()->subDays(30));
+        } elseif ($this->filterDate === 'older') {
+            $query->where('created_at', '<', now()->subDays(30));
+        }
         
-        return $categories->sort(function ($a, $b) use ($direction) {
-            $valueA = $this->getSortValue($a);
-            $valueB = $this->getSortValue($b);
-            
-            if ($valueA === $valueB) return 0;
-            return ($valueA < $valueB ? -1 : 1) * $direction;
-        })->values();
+        // Áp dụng sorting trực tiếp bằng SQL
+        $this->applySortingToQuery($query);
+        
+        // Paginate - Laravel tự động xử lý
+        return $query->paginate($this->perPage);
     }
     
-    // Lấy giá trị để sort theo field
-    private function getSortValue($category)
+    /**
+     * Áp dụng sorting trực tiếp vào query builder
+     */
+    private function applySortingToQuery($query): void
     {
+        $direction = $this->sortDirection;
+        
         switch ($this->sortField) {
             case 'name':
-                return strtolower($category->name);
+                $query->orderBy('name', $direction);
+                break;
             case 'parent':
-                return strtolower($category->parent?->name ?? '');
+                // Join với parent để sort theo tên parent
+                $query->leftJoin('categories as parent_cat', 'categories.parent_id', '=', 'parent_cat.id')
+                      ->orderBy('parent_cat.name', $direction)
+                      ->select('categories.*'); // Chỉ select columns từ categories
+                break;
             case 'posts_count':
-                return $category->posts_count ?? 0;
+                $query->orderBy('posts_count', $direction);
+                break;
             case 'created_at':
-                return $category->created_at->timestamp;
+                $query->orderBy('created_at', $direction);
+                break;
             default:
-                return strtolower($category->name);
+                $query->orderBy('name', 'asc');
         }
     }
     
-    // Xử lý sắp xếp khi click vào cột
+    /**
+     * Xử lý sắp xếp khi click vào cột
+     */
     public function sortBy(string $field): void
     {
         if ($this->sortField === $field) {
@@ -106,29 +165,162 @@ class extends Component
             $this->sortField = $field;
             $this->sortDirection = 'asc';
         }
+        
+        // Livewire tự động re-render với sort mới
     }
 
-    // Lấy danh sách options cho dropdown - CHỈ DANH MỤC GỐC (2 cấp)
-        public function categoryOptions(): BaseCollection
+    /**
+     * Tự động reset về trang 1 khi search query thay đổi
+     */
+    public function updatedSearchQuery(): void
     {
-        $options = new BaseCollection();
-        // CHỈ lấy danh mục gốc (parent_id = null) để tạo danh mục con
-        // KHÔNG cho phép tạo cháu (3 cấp)
-        $rootCategories = $this->allCategories->whereNull('parent_id');
+        $this->resetPage();
+    }
+
+    /**
+     * Reset về trang 1 khi filter thay đổi
+     */
+    public function updatedFilterType(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedFilterVisible(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedFilterPosts(): void
+    {
+        $this->resetPage();
+    }
+
+    public function updatedFilterDate(): void
+    {
+        $this->resetPage();
+    }
+
+    /**
+     * Toggle trạng thái hiển thị với Transaction
+     */
+    public function toggleVisibility(int $id): void
+    {
+        try {
+            $category = Category::with('parent')->findOrFail($id);
+            
+            DB::transaction(function () use ($category) {
+                $newVisibility = !$category->is_visible;
+                $category->update(['is_visible' => $newVisibility]);
+                
+                // Nếu đang hiển thị danh mục con và danh mục gốc đang bị ẩn
+                // → Tự động hiển thị danh mục gốc luôn
+                if ($newVisibility && $category->parent_id && $category->parent && !$category->parent->is_visible) {
+                    $category->parent->update(['is_visible' => true]);
+                    $this->dispatch('toast-notification', 
+                        type: 'success', 
+                        message: 'Đã hiển thị danh mục con và danh mục gốc!'
+                    );
+                } else {
+                    $this->dispatch('toast-notification', 
+                        type: 'success', 
+                        message: $newVisibility ? 'Đã hiển thị danh mục!' : 'Đã ẩn danh mục!'
+                    );
+                }
+            });
+        } catch (\Exception $e) {
+            $this->dispatch('toast-notification', 
+                type: 'error', 
+                message: 'Lỗi: ' . $e->getMessage()
+            );
+        }
+    }
+
+    /**
+     * Xuất dữ liệu ra file CSV (mở được bằng Excel)
+     */
+    public function exportToCSV()
+    {
+        $fileName = 'danh-muc-' . now()->format('Y-m-d_H-i-s') . '.csv';
         
-        foreach ($rootCategories as $category) {
-            // Bỏ qua nếu đang edit chính nó
-            if ($this->editingCategory && $category->id == $this->editingCategory->id) {
-                continue;
+        $categories = Category::with(['parent'])
+            ->withCount('posts')
+            ->orderBy('parent_id', 'asc')
+            ->orderBy('name', 'asc')
+            ->get();
+
+        $headers = [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+        ];
+
+        return new StreamedResponse(function() use ($categories) {
+            $file = fopen('php://output', 'w');
+            
+            // BOM cho UTF-8 (để Excel hiển thị tiếng Việt đúng)
+            fprintf($file, chr(0xEF).chr(0xBB).chr(0xBF));
+            
+            // Thêm dòng này để Excel tự động nhận biết delimiter là dấu chấm phẩy
+            fwrite($file, "sep=;\n");
+            
+            // Header row - dùng dấu chấm phẩy cho Excel Windows
+            fputcsv($file, [
+                'ID',
+                'Tên Danh Mục',
+                'Danh Mục Gốc',
+                'Slug',
+                'Số Bài Viết',
+                'Hiển Thị',
+                'Ngày Tạo',
+                'Ngày Cập Nhật',
+            ], ';');
+            
+            // Data rows - dùng dấu chấm phẩy
+            foreach ($categories as $category) {
+                fputcsv($file, [
+                    $category->id,
+                    $category->name,
+                    $category->parent ? $category->parent->name : '(Danh mục gốc)',
+                    $category->slug,
+                    $category->posts_count ?? 0,
+                    $category->is_visible ? 'Có' : 'Không',
+                    $category->created_at->format('d/m/Y H:i'),
+                    $category->updated_at->format('d/m/Y H:i'),
+                ], ';');
             }
             
-            $optionCategory = new \stdClass();
-            $optionCategory->id = $category->id;
-            $optionCategory->display_name = $category->name;
-            $options->push($optionCategory);
-        }
+            fclose($file);
+        }, 200, $headers);
+    }
+
+    /**
+     * Lấy danh sách options cho dropdown - CHỈ DANH MỤC GỐC
+     * Có caching để tối ưu performance
+     */
+    public function categoryOptions(): BaseCollection
+    {
+        // Cache key dựa theo editing category ID để đảm bảo exclude đúng
+        $cacheKey = 'category_options_' . ($this->editingCategory?->id ?? 'new');
         
-        return $options;
+        return Cache::remember($cacheKey, 3600, function () {
+            $query = Category::whereNull('parent_id')
+                ->orderBy('name', 'asc')
+                ->select('id', 'name');
+            
+            // Bỏ qua nếu đang edit chính nó
+            if ($this->editingCategory) {
+                $query->where('id', '!=', $this->editingCategory->id);
+            }
+            
+            return $query->get()->map(function ($cat) {
+                $obj = new \stdClass();
+                $obj->id = $cat->id;
+                $obj->display_name = $cat->name;
+                return $obj;
+            });
+        });
     }
 
 
@@ -136,25 +328,25 @@ class extends Component
     public function updatedParentId($value): void { $this->resetErrorBag('parentId'); }
 
     // --- Lifecycle Methods ---
-    public function mount(): void { $this->loadCategories(); }
-
-    // --- Core Logic Methods ---
-    // Load categories - Không sort, sẽ sort động khi hiển thị
-    public function loadCategories(): void
-    {
-        // Load parent để hiển thị tên cha, đếm posts
-        $this->allCategories = Category::with(['parent'])
-            ->withCount('posts')
-            ->get();
+    public function mount(): void 
+    { 
+        // Không cần load categories nữa vì dùng Query Builder
     }
 
-    // Reset form (không đổi)
+    // --- Core Logic Methods ---
+
+    /**
+     * Reset form về trạng thái ban đầu
+     */
     public function resetForm(): void
     {
         $this->reset(['name', 'parentId', 'isVisible', 'editingCategory', 'isAddingChild']);
         $this->resetErrorBag();
     }
-    // Mở modal thêm cha
+    
+    /**
+     * Mở modal thêm danh mục gốc
+     */
     public function openAddRootModal(): void
     {
         $this->resetForm(); 
@@ -162,113 +354,209 @@ class extends Component
         $this->parentId = null;
         $this->showAddEditModal = true;
     }
-    // Mở modal thêm con (không đổi)
+    
+    /**
+     * Mở modal thêm danh mục con
+     */
     public function openAddChildModal(): void
     {
-         if ($this->allCategories->isEmpty()) {
-             session()->flash('error', 'Cần tạo danh mục gốc trước.'); return;
-         }
-        $this->resetForm(); $this->isAddingChild = true;
+        // Kiểm tra có danh mục gốc chưa
+        if (Category::whereNull('parent_id')->count() === 0) {
+            $this->dispatch('toast-notification', type: 'error', message: 'Cần tạo danh mục gốc trước.');
+            return;
+        }
+        
+        $this->resetForm();
+        $this->isAddingChild = true;
         $this->parentId = null; 
         $this->showAddEditModal = true;
     }
-    // Mở modal sửa (không đổi)
+    
+    /**
+     * Mở modal sửa danh mục
+     */
     public function edit(int $id): void
     {
-        $category = $this->allCategories->find($id);
+        $category = Category::find($id);
         if ($category) {
-            $this->resetErrorBag(); $this->editingCategory = $category;
-            $this->name = $category->name; $this->parentId = $category->parent_id;
-            $this->isVisible = $category->is_visible; // Vẫn giữ isVisible để biết trạng thái khi sửa
+            $this->resetErrorBag();
+            $this->editingCategory = $category;
+            $this->name = $category->name;
+            $this->parentId = $category->parent_id;
+            $this->isVisible = $category->is_visible;
             $this->isAddingChild = $category->parent_id !== null;
             $this->showAddEditModal = true;
         }
     }
     
-    // Đóng modal thêm/sửa (không đổi)
-    public function closeAddEditModal(): void { $this->showAddEditModal = false; $this->resetForm(); }
-    // Validate slug (không đổi)
+    /**
+     * Đóng modal thêm/sửa
+     */
+    public function closeAddEditModal(): void
+    {
+        $this->showAddEditModal = false;
+        $this->resetForm();
+    }
+    
+    /**
+     * Validate slug cho category
+     */
     protected function validateSlug(): array
     {
-        $slug = Str::slug($this->name); $query = ValidationRule::unique('categories', 'slug');
-        if ($this->editingCategory) $query->ignore($this->editingCategory->id);
+        $slug = Str::slug($this->name);
+        $query = ValidationRule::unique('categories', 'slug');
+        
+        if ($this->editingCategory) {
+            $query->ignore($this->editingCategory->id);
+        }
+        
         $validator = Validator::make(['slug' => $slug], ['slug' => [$query]]);
-        if ($validator->fails()) { $this->addError('name', 'Tên đã trùng lặp (slug).'); return []; }
+        
+        if ($validator->fails()) {
+            $this->addError('name', 'Tên đã trùng lặp (slug).');
+            return [];
+        }
+        
         return ['slug' => $slug];
     }
-    // Lưu
+    
+    /**
+     * Lưu category (create hoặc update)
+     */
     public function save(): void
     {
-         $rules = [
-             'name' => ['required', 'string', 'min:3', 'max:255'],
-             'isVisible' => ['boolean'], // Vẫn validate isVisible
-             'parentId' => ['nullable', 'exists:categories,id'],
-         ];
-         if ($this->isAddingChild && !$this->editingCategory) {
-             $rules['parentId'][] = 'required';
-         }
-         $validator = Validator::make(['name' => $this->name, 'isVisible' => $this->isVisible, 'parentId' => $this->parentId], $rules, ['parentId.required' => 'Vui lòng chọn danh mục cha.']);
-         if ($validator->fails()) { $this->setErrorBag($validator->errors()); return; }
+        // Validation rules
+        $rules = [
+            'name' => ['required', 'string', 'min:3', 'max:255'],
+            'isVisible' => ['boolean'],
+            'parentId' => ['nullable', 'exists:categories,id'],
+        ];
         
-        // KIỂM TRA: Chỉ cho phép 2 cấp (cha-con), KHÔNG cho phép cháu
+        // Parent ID bắt buộc khi thêm con
+        if ($this->isAddingChild && !$this->editingCategory) {
+            $rules['parentId'][] = 'required';
+        }
+        
+        $validator = Validator::make(
+            ['name' => $this->name, 'isVisible' => $this->isVisible, 'parentId' => $this->parentId],
+            $rules,
+            ['parentId.required' => 'Vui lòng chọn danh mục cha.']
+        );
+        
+        if ($validator->fails()) {
+            $this->setErrorBag($validator->errors());
+            return;
+        }
+        
+        // Kiểm tra chỉ cho phép 2 cấp (cha-con)
         if ($this->parentId) {
-            $selectedParent = $this->allCategories->find($this->parentId);
+            $selectedParent = Category::find($this->parentId);
             if ($selectedParent && $selectedParent->parent_id !== null) {
                 $this->addError('parentId', 'Chỉ được tạo danh mục con (2 cấp). Không thể tạo cháu (3 cấp).');
                 return;
             }
         }
         
-        $validatedSlug = $this->validateSlug(); if (empty($validatedSlug)) return;
-        $finalParentId = $this->parentId;
-        // Vẫn lưu isVisible
-        $data = ['name' => $this->name, 'slug' => $validatedSlug['slug'], 'parent_id' => $finalParentId, 'is_visible' => $this->isVisible];
-        if ($this->editingCategory) {
-             if ($data['parent_id'] == $this->editingCategory->id) { $this->addError('parentId', 'Không thể chọn chính nó làm cha.'); return; }
-            $newParent = $data['parent_id'] ? $this->allCategories->find($data['parent_id']) : null;
-            $currentCategory = $this->editingCategory;
-            // BỎ kiểm tra vòng lặp vì không còn hiển thị cây
-            // while ($newParent) {
-            //     if ($newParent->id == $currentCategory->id) { $this->addError('parentId', 'Không thể đặt làm con của con cháu.'); return; }
-            //      $parentOfNewParentId = $newParent->parent_id;
-            //      $newParent = $parentOfNewParentId ? $this->allCategories->find($parentOfNewParentId) : null;
-            // }
+        // Validate slug
+        $validatedSlug = $this->validateSlug();
+        if (empty($validatedSlug)) return;
+        
+        // Kiểm tra không thể chọn chính nó làm cha
+        if ($this->editingCategory && $this->parentId == $this->editingCategory->id) {
+            $this->addError('parentId', 'Không thể chọn chính nó làm danh mục cha.');
+            return;
         }
+        
+        // Prepare data
+        $data = [
+            'name' => $this->name,
+            'slug' => $validatedSlug['slug'],
+            'parent_id' => $this->parentId,
+            'is_visible' => $this->isVisible
+        ];
+        
         try {
             if ($this->editingCategory) {
-                $categoryToUpdate = Category::find($this->editingCategory->id);
-                if($categoryToUpdate){ $categoryToUpdate->update($data); session()->flash('success', 'Cập nhật thành công.'); }
-                else { session()->flash('error', 'Không tìm thấy danh mục.'); $this->closeAddEditModal(); $this->loadCategories(); return; }
-            } else { Category::create($data); session()->flash('success', 'Tạo mới thành công.'); }
-            $this->closeAddEditModal(); $this->loadCategories();
-        } catch (\Exception $e) { session()->flash('error', 'Lỗi: ' . $e->getMessage()); }
-    }
-    // Xóa (không đổi)
-    public function delete(int $id): void
-    {
-        $category = $this->allCategories->find($id);
-        if ($category) {
-             $children = $this->allCategories->where('parent_id', $category->id);
-             if ($children->isNotEmpty()) { session()->flash('error', 'Còn danh mục con.'); return; }
-             if (!property_exists($category, 'posts_count')) { $category = Category::withCount('posts')->find($id); if (!$category) return; }
-            if ($category->posts_count > 0) { session()->flash('error', 'Còn bài viết.'); return; }
-            Category::destroy($id); session()->flash('success', 'Xóa thành công.');
-            $this->loadCategories(); $this->resetForm();
-            if ($this->editingCategory && $this->editingCategory->id === $id) $this->closeAddEditModal();
+                // Update
+                $categoryToUpdate = Category::findOrFail($this->editingCategory->id);
+                $categoryToUpdate->update($data);
+                $this->dispatch('toast-notification', type: 'success', message: 'Cập nhật danh mục thành công!');
+            } else {
+                // Create
+                Category::create($data);
+                $this->dispatch('toast-notification', type: 'success', message: 'Tạo danh mục mới thành công!');
+            }
+            
+            // Clear cache vì có thay đổi
+            Cache::flush(); // Hoặc chỉ xóa cache liên quan: Cache::forget('category_options_*')
+            
+            $this->closeAddEditModal();
+        } catch (\Exception $e) {
+            $this->dispatch('toast-notification', type: 'error', message: 'Lỗi: ' . $e->getMessage());
         }
     }
-    // Mở modal xem bài viết (không đổi)
+    /**
+     * Xóa category với error handling tốt
+     */
+    public function delete(int $id): void
+    {
+        try {
+            $category = Category::with('children')->withCount('posts')->findOrFail($id);
+            
+            // Kiểm tra có danh mục con không
+            if ($category->children->isNotEmpty()) {
+                throw new \Exception('Không thể xóa danh mục có danh mục con!');
+            }
+            
+            // Kiểm tra có bài viết không
+            if ($category->posts_count > 0) {
+                throw new \Exception('Không thể xóa danh mục có bài viết!');
+            }
+            
+            // Xóa trong transaction
+            DB::transaction(function () use ($category) {
+                $category->delete();
+            });
+            
+            // Clear cache vì có thay đổi
+            Cache::flush();
+            
+            $this->dispatch('toast-notification', type: 'success', message: 'Xóa danh mục thành công!');
+            
+            // Nếu đang edit category này thì đóng modal
+            if ($this->editingCategory && $this->editingCategory->id === $id) {
+                $this->closeAddEditModal();
+            }
+            
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            $this->dispatch('toast-notification', type: 'error', message: 'Không tìm thấy danh mục!');
+        } catch (\Exception $e) {
+            $this->dispatch('toast-notification', type: 'error', message: $e->getMessage());
+        }
+    }
+    
+    /**
+     * Mở modal xem bài viết trong category
+     */
     public function openPostModal(int $categoryId): void
     {
-        $category = Category::find($categoryId);
+        $category = Category::withCount('posts')->find($categoryId);
         if ($category) {
             $this->viewingCategory = $category;
             $this->postsForModal = Post::where('category_id', $categoryId)
-                                       ->with('user')->orderBy('created_at', 'desc')->get();
+                ->with('user')
+                ->orderBy('created_at', 'desc')
+                ->get();
         }
     }
-    // Đóng modal xem bài viết (không đổi)
-    public function closePostModal(): void { $this->reset(['viewingCategory', 'postsForModal']); }
+    
+    /**
+     * Đóng modal xem bài viết
+     */
+    public function closePostModal(): void 
+    { 
+        $this->reset(['viewingCategory', 'postsForModal']);
+    }
 
      // Truyền computed properties vào view (SỬA LẠI: dùng filtered)
      public function with(): array
@@ -283,124 +571,143 @@ class extends Component
 ?>
 
 {{-- Bắt đầu View --}}
-<div class="space-y-6 p-6">
+<div class="p-6">
 
-    {{-- Header với gradient đẹp --}}
-    <header class="relative overflow-hidden rounded-2xl bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 p-8 shadow-xl">
-        <div class="relative z-10 flex flex-col space-y-4 md:flex-row md:items-center md:justify-between md:space-y-0">
-            <div class="flex items-center gap-4">
-                <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/20 backdrop-blur-sm shadow-lg">
-                    <svg class="h-10 w-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-                    </svg>
+    {{-- Card duy nhất chứa tất cả --}}
+    <div class="overflow-hidden rounded-2xl border-2 border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
+        
+        {{-- Header với gradient --}}
+        <div class="relative overflow-hidden bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 px-8 py-6">
+            <div class="relative z-10 flex items-center gap-4">
+                <div class="flex h-14 w-14 items-center justify-center rounded-xl bg-white/20 backdrop-blur-sm shadow-lg">
+                    <flux:icon.folder class="size-8 text-white" />
                 </div>
-                <div>
-                    <h1 class="text-3xl font-bold text-white drop-shadow-lg">
-            Quản lý Danh mục
-        </h1>
-                    <p class="text-sm text-white/80 mt-1">Quản lý danh mục sản phẩm của bạn</p>
-                </div>
+                <h1 class="text-2xl font-bold text-white drop-shadow-lg">Quản lý Danh mục</h1>
             </div>
+            <div class="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10 blur-3xl"></div>
+            <div class="absolute -bottom-10 -left-10 h-32 w-32 rounded-full bg-white/10 blur-3xl"></div>
         </div>
-        {{-- Decorative elements --}}
-        <div class="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10 blur-3xl"></div>
-        <div class="absolute -bottom-10 -left-10 h-40 w-40 rounded-full bg-white/10 blur-3xl"></div>
-    </header>
 
-    {{-- Alert Messages với animation --}}
-    <div class="space-y-3">
-        @if (session('success'))
-            <div class="animate-in slide-in-from-top duration-500 rounded-xl bg-gradient-to-r from-green-50 to-emerald-50 p-5 shadow-lg border-l-4 border-green-500 dark:from-green-900/40 dark:to-emerald-900/40">
-                <div class="flex items-center gap-3">
-                    <div class="flex-shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-green-500 shadow-md">
-                        <svg class="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd" />
-                        </svg>
-                    </div>
-                    <div>
-                        <p class="text-base font-bold text-green-900 dark:text-green-100">Thành công!</p>
-                        <p class="text-sm text-green-700 dark:text-green-200">{{ session('success') }}</p>
-                    </div>
-                </div>
-            </div>
-        @endif
-        @if (session('error'))
-            <div class="animate-in slide-in-from-top duration-500 rounded-xl bg-gradient-to-r from-red-50 to-pink-50 p-5 shadow-lg border-l-4 border-red-500 dark:from-red-900/40 dark:to-pink-900/40">
-                <div class="flex items-center gap-3">
-                    <div class="flex-shrink-0 flex h-10 w-10 items-center justify-center rounded-full bg-red-500 shadow-md">
-                        <svg class="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
-                        </svg>
-                    </div>
-                    <div>
-                        <p class="text-base font-bold text-red-900 dark:text-red-100">Lỗi!</p>
-                        <p class="text-sm text-red-700 dark:text-red-200">{{ session('error') }}</p>
-                    </div>
-                </div>
-            </div>
-        @endif
-    </div>
-
-    {{-- Action Bar với gradient đẹp --}}
-    <div class="rounded-2xl border-2 border-transparent bg-gradient-to-r from-white via-indigo-50 to-purple-50 p-5 shadow-xl dark:from-zinc-800 dark:via-indigo-950 dark:to-purple-950 flex flex-wrap items-center gap-4">
+        {{-- Action Bar --}}
+        <div class="bg-gradient-to-r from-white via-blue-50 to-cyan-50 p-5 dark:from-zinc-800 dark:via-blue-950 dark:to-cyan-950 flex flex-wrap items-center gap-4 border-b-2 border-gray-100 dark:border-gray-700">
         <!-- Nhóm nút với gradient -->
         <div class="flex flex-shrink-0 items-center gap-3">
             <button 
                 wire:click="openAddRootModal"
-                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-blue-600 hover:to-indigo-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
+                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-blue-600 hover:to-cyan-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
             >
-                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" />
-                </svg>
+                <flux:icon.folder class="size-5" />
                 <span>Thêm Mục Gốc</span>
             </button>
 
             <button 
                 wire:click="openAddChildModal"
-                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-purple-500 to-pink-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-purple-600 hover:to-pink-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
+                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-cyan-600 hover:to-teal-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
             >
-                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10.5v6m3-3H9m4.06-7.19-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-                </svg>
+                <flux:icon.folder-plus class="size-5" />
                 <span>Thêm Mục Con</span>
+            </button>
+
+            <button 
+                wire:click="exportToCSV"
+                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
+                title="Xuất ra file CSV (mở được bằng Excel)"
+            >
+                <flux:icon.arrow-down-tray class="size-5" />
+                <span>Xuất Excel</span>
             </button>
   </div>
 
         <!-- Thanh tìm kiếm với gradient border -->
         <div class="relative flex-1 min-w-[280px]">
-            <div class="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 opacity-20 blur-sm"></div>
+            <div class="absolute inset-0 rounded-full bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 opacity-20 blur-sm"></div>
   <input
     type="search"
     wire:model.live.debounce.300ms="searchQuery"
                 placeholder="🔍 Tìm kiếm tên danh mục..."
                 class="relative block w-full appearance-none rounded-full border-2 border-gray-200 bg-white py-3 pl-6 pr-16 shadow-md text-sm font-medium
-                       focus:border-transparent focus:ring-4 focus:ring-purple-200
+                       focus:border-transparent focus:ring-4 focus:ring-cyan-200
                        dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:placeholder-gray-400
-                       dark:focus:ring-purple-900 transition-all duration-300"
+                       dark:focus:ring-cyan-900 transition-all duration-300"
             />
 
             <!-- Icon tìm kiếm gradient -->
-  <button
-    type="button"
-    aria-label="Tìm kiếm"
-                class="absolute right-2 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-r from-red-500 to-pink-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 active:scale-95"
+            <button
+                type="button"
+                aria-label="Tìm kiếm"
+                class="absolute right-2 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-r from-cyan-500 to-teal-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 active:scale-95"
             >
-                <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
-    </svg>
-  </button>
+                <flux:icon.magnifying-glass class="size-5" />
+            </button>
 </div>
+    </div>
+
+        {{-- Filter Bar --}}
+        <div class="bg-white p-5 dark:bg-gray-800 border-b-2 border-gray-100 dark:border-gray-700">
+        <div class="flex flex-wrap items-center gap-4">
+            <div class="text-sm font-semibold text-gray-700 dark:text-gray-300">
+                <flux:icon.funnel class="inline size-5 mr-1" />
+                Bộ lọc:
+            </div>
+
+            <!-- Lọc theo loại -->
+            <div class="flex-1 min-w-[180px]">
+                <select wire:model.live="filterType" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
+                    <option value="all">📁 Tất cả loại</option>
+                    <option value="root">📂 Chỉ danh mục gốc</option>
+                    <option value="child">📄 Chỉ danh mục con</option>
+                </select>
 </div>
+
+            <!-- Lọc theo trạng thái -->
+            <div class="flex-1 min-w-[180px]">
+                <select wire:model.live="filterVisible" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
+                    <option value="all">👁️ Tất cả trạng thái</option>
+                    <option value="visible">✅ Đang hiển thị</option>
+                    <option value="hidden">❌ Đang ẩn</option>
+                </select>
+            </div>
+            
+            <!-- Lọc theo bài viết -->
+            <div class="flex-1 min-w-[180px]">
+                <select wire:model.live="filterPosts" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
+                    <option value="all">📝 Tất cả</option>
+                    <option value="has_posts">✍️ Có bài viết</option>
+                    <option value="no_posts">📭 Chưa có bài viết</option>
+                </select>
+            </div>
+            
+            <!-- Lọc theo ngày tạo -->
+            <div class="flex-1 min-w-[180px]">
+                <select wire:model.live="filterDate" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
+                    <option value="all">📅 Tất cả ngày</option>
+                    <option value="today">🆕 Hôm nay</option>
+                    <option value="last_7_days">📆 7 ngày qua</option>
+                    <option value="last_30_days">📅 30 ngày qua</option>
+                    <option value="older">⏰ Cũ hơn 30 ngày</option>
+                </select>
+            </div>
+            
+            <!-- Nút reset filter -->
+            <button 
+                wire:click="$set('filterType', 'all'); $set('filterVisible', 'all'); $set('filterPosts', 'all'); $set('filterDate', 'all');"
+                class="rounded-lg bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600 transition-colors"
+                title="Xóa tất cả bộ lọc"
+            >
+                <flux:icon.x-mark class="size-5" />
+            </button>
+        </div>
+    </div>
 
 
 
 
 
     {{-- Bảng với gradient header đẹp --}}
-    <div class="overflow-hidden rounded-2xl border-2 border-gray-200 shadow-2xl dark:border-gray-700 backdrop-blur-sm">
+        {{-- Table --}}
         <div class="overflow-x-auto">
             <table class="w-full table-auto">
-                <thead class="bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 text-white">
+                <thead class="bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 text-white">
                     <tr>
                         {{-- Cột Tên danh mục - Có Sort --}}
                         <th scope="col" class="px-6 py-4 text-left">
@@ -408,14 +715,14 @@ class extends Component
                                 <span>Tên danh mục</span>
                                 <span class="inline-flex flex-col -space-y-1">
                                     @if($sortField === 'name' && $sortDirection === 'asc')
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-yellow-300" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40" variant="solid" />
                                     @elseif($sortField === 'name' && $sortDirection === 'desc')
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-yellow-300" variant="solid" />
                                     @else
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
                                     @endif
                                 </span>
                             </button>
@@ -426,14 +733,14 @@ class extends Component
                                 <span>Danh mục gốc</span>
                                 <span class="inline-flex flex-col -space-y-1">
                                     @if($sortField === 'parent' && $sortDirection === 'asc')
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-yellow-300" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40" variant="solid" />
                                     @elseif($sortField === 'parent' && $sortDirection === 'desc')
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-yellow-300" variant="solid" />
                                     @else
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
                                     @endif
                                 </span>
                             </button>
@@ -444,17 +751,21 @@ class extends Component
                                 <span>Bài viết</span>
                                 <span class="inline-flex flex-col -space-y-1">
                                     @if($sortField === 'posts_count' && $sortDirection === 'asc')
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-yellow-300" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40" variant="solid" />
                                     @elseif($sortField === 'posts_count' && $sortDirection === 'desc')
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-yellow-300" variant="solid" />
                                     @else
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
                                     @endif
                                 </span>
                             </button>
+                        </th>
+                        {{-- Cột Hiển thị --}}
+                        <th scope="col" class="px-4 py-4 text-center whitespace-nowrap">
+                            <span class="text-xs font-bold uppercase tracking-wider text-white">Hiển thị</span>
                         </th>
                         {{-- Cột Ngày tạo - Có Sort --}}
                         <th scope="col" class="px-6 py-4 text-left whitespace-nowrap">
@@ -462,14 +773,14 @@ class extends Component
                                 <span>Ngày tạo</span>
                                 <span class="inline-flex flex-col -space-y-1">
                                     @if($sortField === 'created_at' && $sortDirection === 'asc')
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-yellow-300" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40" variant="solid" />
                                     @elseif($sortField === 'created_at' && $sortDirection === 'desc')
-                                        <svg class="h-3 w-3 text-white/40" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-yellow-300" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-yellow-300" variant="solid" />
                                     @else
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 3.293l4.146 4.147a.5.5 0 0 0 .708-.708l-4.5-4.5a.5.5 0 0 0-.708 0l-4.5 4.5a.5.5 0 1 0 .708.708L8 3.293z"/></svg>
-                                        <svg class="h-3 w-3 text-white/40 group-hover:text-white/60" fill="currentColor" viewBox="0 0 16 16"><path d="M8 12.707l-4.146-4.147a.5.5 0 0 1 .708-.708L8 11.293l3.438-3.44a.5.5 0 0 1 .708.707l-4.5 4.5a.5.5 0 0 1-.708 0z"/></svg>
+                                        <flux:icon.chevron-up class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
+                                        <flux:icon.chevron-down class="size-3 text-white/40 group-hover:text-white/60" variant="solid" />
                                     @endif
                                 </span>
                             </button>
@@ -481,7 +792,7 @@ class extends Component
                 <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700">
                     {{-- Lặp qua $displayCategories (đã lọc, sort theo tên) --}}
                     @forelse ($displayCategories as $category)
-                         <tr wire:key="cat-{{ $category->id }}" class="transition-all duration-200 hover:bg-gradient-to-r hover:from-indigo-50 hover:via-purple-50 hover:to-pink-50 dark:hover:from-indigo-950/30 dark:hover:via-purple-950/30 dark:hover:to-pink-950/30 hover:shadow-md">
+                         <tr wire:key="cat-{{ $category->id }}" class="transition-all duration-200 hover:bg-gradient-to-r hover:from-blue-50 hover:via-cyan-50 hover:to-teal-50 dark:hover:from-blue-950/30 dark:hover:via-cyan-950/30 dark:hover:to-teal-950/30 hover:shadow-md">
                              {{-- Cột Tên danh mục (CON) --}}
                              <td class="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900 dark:text-gray-100">
                                  @if($category->parent_id === null)
@@ -504,11 +815,30 @@ class extends Component
                              </td>
                              {{-- Cột Bài viết --}}
                              <td class="whitespace-nowrap px-4 py-4 text-sm text-center text-gray-500 dark:text-gray-400">
-                                 @if ($category->posts_count > 0)
-                                     <button wire:click="openPostModal({{ $category->id }})" class="text-indigo-600 hover:underline dark:text-indigo-400 dark:hover:underline">
-                                         {{ $category->posts_count }}
+                                 @php
+                                     $postsCount = $category->posts_count ?? 0;
+                                 @endphp
+                                 @if ($postsCount > 0)
+                                     <button wire:click="openPostModal({{ $category->id }})" class="text-cyan-600 hover:underline dark:text-cyan-400 dark:hover:underline font-semibold">
+                                         {{ $postsCount }}
                                      </button>
-                                 @else 0 @endif
+                                 @else 
+                                     <span class="text-gray-400">0</span>
+                                 @endif
+                             </td>
+                             {{-- Cột Hiển thị - Icon Mắt --}}
+                             <td class="whitespace-nowrap px-4 py-4 text-center">
+                                 <button 
+                                    wire:click="toggleVisibility({{ $category->id }})"
+                                    class="inline-flex items-center justify-center rounded-lg p-2 transition-all duration-200 hover:scale-110 active:scale-95 focus:outline-none {{ $category->is_visible ? 'text-emerald-600 hover:bg-emerald-50 active:bg-emerald-100 dark:text-emerald-400 dark:hover:bg-emerald-950/30 dark:active:bg-emerald-950/50' : 'text-gray-400 hover:bg-gray-100 active:bg-gray-200 dark:text-gray-500 dark:hover:bg-gray-700 dark:active:bg-gray-600' }}"
+                                    title="{{ $category->is_visible ? 'Đang hiển thị - Click để ẩn' : 'Đang ẩn - Click để hiển thị' }}"
+                                >
+                                    @if($category->is_visible)
+                                        <flux:icon.eye class="size-5" />
+                                    @else
+                                        <flux:icon.eye-slash class="size-5" />
+                                    @endif
+                                </button>
                              </td>
                              {{-- Cột Ngày tạo --}}
                              <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-500 dark:text-gray-400">{{ $category->created_at->format('d/m/Y') }}</td>
@@ -521,13 +851,19 @@ class extends Component
                              </td>
                          </tr>
                     @empty
-                         <tr><td colspan="5" class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ empty(trim($searchQuery)) ? 'Chưa có danh mục nào.' : 'Không tìm thấy kết quả.' }}</td></tr>
+                         <tr><td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ empty(trim($searchQuery)) ? 'Chưa có danh mục nào.' : 'Không tìm thấy kết quả.' }}</td></tr>
                     @endforelse
                 </tbody>
             </table>
         </div>
-    </div>
+        
+        {{-- Pagination --}}
+        <div class="border-t border-gray-200 bg-white px-6 py-4 dark:border-gray-700 dark:bg-gray-800">
+            <x-custom-pagination :paginator="$displayCategories" :perPage="$perPage" />
+        </div>
 
+    </div>
+    {{-- End of main card --}}
 
    {{-- Add/Edit Modal - HIỂN THỊ GIỮA, NÚT MÀU --}}
     {{-- Add/Edit Modal - POPUP GIỮA MÀN HÌNH --}}
