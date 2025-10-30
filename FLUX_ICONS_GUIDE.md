@@ -346,3 +346,6 @@ php artisan config:clear
 *Last Updated: 2025-10-27*
 *Category Management System - Icon Standardization*
 
+
+
+

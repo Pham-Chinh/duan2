@@ -16,8 +16,50 @@
             <h1 class="text-3xl font-bold text-gray-900 dark:text-white">Dashboard</h1>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Tổng quan hoạt động và thống kê hệ thống</p>
         </div>
-        <div class="flex items-center gap-2">
-            <span class="text-sm text-gray-500 dark:text-gray-400">{{ now()->format('d/m/Y') }}</span>
+        <!-- Icon group - không có khung bao -->
+        <div class="flex items-center gap-4">
+            <!-- Dark Mode Toggle -->
+            <div x-data="darkMode()" x-init="init()">
+                <button @click="toggle()" 
+                        class="flex items-center justify-center h-11 w-11 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-all duration-300 hover:scale-110 active:scale-95"
+                        title="Toggle Dark Mode">
+                    <!-- Sun icon (visible in dark mode) -->
+                    <svg x-show="isDark" 
+                         x-transition:enter="transition ease-out duration-300 transform"
+                         x-transition:enter-start="rotate-90 scale-0 opacity-0"
+                         x-transition:enter-end="rotate-0 scale-100 opacity-100"
+                         class="h-6 w-6 text-amber-500" 
+                         fill="none" 
+                         stroke="currentColor" 
+                         viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    
+                    <!-- Moon icon (visible in light mode) -->
+                    <svg x-show="!isDark"
+                         x-transition:enter="transition ease-out duration-300 transform"
+                         x-transition:enter-start="-rotate-90 scale-0 opacity-0"
+                         x-transition:enter-end="rotate-0 scale-100 opacity-100"
+                         class="h-6 w-6 text-indigo-600 dark:text-indigo-400" 
+                         fill="none" 
+                         stroke="currentColor" 
+                         viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Clock -->
+            <div x-data="clock()" x-init="start()" class="flex items-center gap-2">
+                <svg class="h-6 w-6 text-blue-600 dark:text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                
+                <div class="flex flex-col leading-tight">
+                    <span class="font-mono text-base font-bold text-gray-900 dark:text-white" x-text="timeOnly"></span>
+                    <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400" x-text="dateOnly"></span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -112,7 +154,6 @@
                     @endif
                 </p>
             </div>
-            
             <!-- Filter Buttons -->
             <div class="flex gap-2 rounded-lg bg-gray-100 p-1 dark:bg-neutral-700">
                 <button 
@@ -136,9 +177,14 @@
             </div>
         </div>
 
+        <!-- Chart Data (JSON) - Livewire sẽ update cái này -->
+        <script id="postsChartData" type="application/json">
+            @json(['labels' => $chartLabels, 'values' => $chartValues])
+        </script>
+        
         <!-- Chart Canvas -->
-        <div class="relative h-96" wire:ignore>
-            <canvas id="postsChart"></canvas>
+        <div class="relative h-96">
+            <canvas id="postsChart" wire:ignore></canvas>
         </div>
     </div>
 </div>
@@ -148,27 +194,41 @@
 let postsChart = null;
 
 function initChart() {
-    const ctx = document.getElementById('postsChart');
+    const canvas = document.getElementById('postsChart');
+    if (!canvas) {
+        console.log('Chart canvas not found, skipping initialization');
+        return;
+    }
     
-    if (!ctx) return;
+    // Lấy data mới nhất sau mỗi lần Livewire render
+    const payloadEl = document.getElementById('postsChartData');
+    if (!payloadEl) {
+        console.log('Chart data element not found, skipping initialization');
+        return;
+    }
+    
+    const { labels, values } = JSON.parse(payloadEl.textContent);
+    console.log('Initializing chart with labels:', labels.length, 'values:', values.length);
     
     // Destroy existing chart if it exists
     if (postsChart) {
         postsChart.destroy();
+        postsChart = null;
     }
     
     // Create gradient
-    const gradient = ctx.getContext('2d').createLinearGradient(0, 0, 0, 400);
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createLinearGradient(0, 0, 0, 400);
     gradient.addColorStop(0, 'rgba(99, 102, 241, 0.3)');
     gradient.addColorStop(1, 'rgba(99, 102, 241, 0.01)');
     
     postsChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: @json($chartLabels),
+            labels: labels,
             datasets: [{
                 label: 'Số bài viết',
-                data: @json($chartValues),
+                data: values,
                 borderColor: 'rgb(99, 102, 241)',
                 backgroundColor: gradient,
                 borderWidth: 3,
@@ -254,13 +314,20 @@ function initChart() {
                         padding: 10,
                         autoSkip: false,
                         callback: function(value, index, ticks) {
-                            // value là giá trị label (ngày)
-                            const day = parseInt(value);
-                            // Hiển thị: ngày 1, các mốc chia hết cho 5, và ngày cuối
-                            if (day === 1 || day % 5 === 0 || index === ticks.length - 1) {
-                                return day;
+                            const label = this.getLabelForValue(value);
+                            
+                            // Nếu label là số (biểu đồ theo ngày)
+                            const day = parseInt(label, 10);
+                            if (!isNaN(day)) {
+                                // Hiển thị: ngày 1, các mốc chia hết cho 5, và ngày cuối
+                                if (day === 1 || day % 5 === 0 || index === ticks.length - 1) {
+                                    return label;
+                                }
+                                return '';
                             }
-                            return '';
+                            
+                            // Nếu label là text (biểu đồ theo tháng/năm), hiển thị tất cả
+                            return label;
                         }
                     },
                     grid: {
@@ -277,16 +344,24 @@ function initChart() {
     });
 }
 
-// Initialize chart on page load
-document.addEventListener('livewire:navigated', initChart);
+// Initialize chart khi trang load
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(initChart, 100);
+});
 
-// Re-initialize chart after Livewire updates
+// Initialize chart khi Livewire init
 document.addEventListener('livewire:init', () => {
-    Livewire.hook('morph.updated', () => {
-        setTimeout(initChart, 100);
+    setTimeout(initChart, 100);
+    
+    // Sau mỗi lần DOM của component được morph xong (khi update state)
+    Livewire.hook('morph.updated', ({ el, component }) => {
+        // Chỉ init lại chart nếu đây là Dashboard component
+        if (component && component.el.querySelector('#postsChart')) {
+            setTimeout(initChart, 100);
+        }
     });
     
-    // Listen for custom events to refresh chart
+    // Các event thủ công khi thêm/sửa/xóa post
     Livewire.on('post-created', () => {
         setTimeout(initChart, 100);
     });
@@ -300,10 +375,87 @@ document.addEventListener('livewire:init', () => {
     });
 });
 
-// Initial load
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initChart);
-} else {
-    initChart();
+// Event listener khi navigate giữa các trang (Livewire Wire Navigate / SPA mode)
+document.addEventListener('livewire:navigated', () => {
+    console.log('Livewire navigated, re-initializing chart...');
+    setTimeout(initChart, 150);
+});
+
+// Dark Mode Toggle Component
+function darkMode() {
+    return {
+        isDark: false,
+        
+        init() {
+            // Check localStorage or system preference
+            if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                this.isDark = true;
+                document.documentElement.classList.add('dark');
+            } else {
+                this.isDark = false;
+                document.documentElement.classList.remove('dark');
+            }
+        },
+        
+        toggle() {
+            this.isDark = !this.isDark;
+            
+            if (this.isDark) {
+                document.documentElement.classList.add('dark');
+                localStorage.theme = 'dark';
+            } else {
+                document.documentElement.classList.remove('dark');
+                localStorage.theme = 'light';
+            }
+            
+            // Trigger chart re-render for dark mode colors
+            setTimeout(() => {
+                if (typeof initChart === 'function') {
+                    initChart();
+                }
+            }, 100);
+        }
+    }
+}
+
+// Clock component for real-time display
+function clock() {
+    return {
+        timeOnly: '',
+        dateOnly: '',
+        interval: null,
+        
+        start() {
+            this.updateTime();
+            this.interval = setInterval(() => {
+                this.updateTime();
+            }, 1000);
+        },
+        
+        updateTime() {
+            const now = new Date();
+            
+            // Format time
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            
+            // Format date
+            const days = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+            const day = String(now.getDate()).padStart(2, '0');
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const year = now.getFullYear();
+            const dayName = days[now.getDay()];
+            
+            this.timeOnly = `${hours}:${minutes}:${seconds}`;
+            this.dateOnly = `${dayName}, ${day}/${month}/${year}`;
+        },
+        
+        destroy() {
+            if (this.interval) {
+                clearInterval(this.interval);
+            }
+        }
+    }
 }
 </script>

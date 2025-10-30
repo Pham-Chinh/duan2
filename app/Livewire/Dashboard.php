@@ -13,6 +13,14 @@ class Dashboard extends Component
     public $chartType = 'day'; // day, month, year
     
     /**
+     * Mount component - Reset chartType về 'day' mỗi lần vào trang
+     */
+    public function mount(): void
+    {
+        $this->chartType = 'day';
+    }
+    
+    /**
      * Refresh dashboard khi có post mới hoặc cập nhật
      */
     #[On('post-created')]

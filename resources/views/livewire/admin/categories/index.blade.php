@@ -16,6 +16,7 @@ use Livewire\Attributes\Title;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Maatwebsite\Excel\Excel as ExcelWriter;
 
 new #[Layout('components.layouts.app')] #[Title('Quản lý Danh mục')]
 class extends Component
@@ -236,11 +237,11 @@ class extends Component
     }
 
     /**
-     * Xuất dữ liệu ra file CSV (mở được bằng Excel)
+     * Xuất dữ liệu ra file excel (mở được bằng Excel)
      */
     public function exportToCSV()
     {
-        $fileName = 'danh-muc-' . now()->format('Y-m-d_H-i-s') . '.csv';
+        $fileName = 'danh-muc-' . now()->format('Y-m-d_H-i-s') . '.xlsx';
         
         $categories = Category::with(['parent'])
             ->withCount('posts')
@@ -611,7 +612,7 @@ class extends Component
             <button 
                 wire:click="exportToCSV"
                 class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
-                title="Xuất ra file CSV (mở được bằng Excel)"
+                title="Xuất file Excel"
             >
                 <flux:icon.arrow-down-tray class="size-5" />
                 <span>Xuất Excel</span>
