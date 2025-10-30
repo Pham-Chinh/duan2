@@ -434,55 +434,70 @@ class extends Component
             {{-- Banner --}}
             <div>
                 <label class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                    Ảnh Banner
+                    Ảnh Banner <span class="text-xs font-normal text-gray-500">- Chỉ chọn 1 ảnh</span>
                 </label>
 
                 {{-- Banner hiện tại --}}
-                @if($currentBanner)
+                @if($currentBanner && !$newBanner)
                     <div class="mb-4">
-                        <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">Banner hiện tại:</p>
+                        <p class="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2">Banner hiện tại:</p>
                         <div class="relative inline-block">
-                            <img src="{{ asset('storage/' . $currentBanner) }}" alt="Current Banner" class="h-32 w-48 rounded-lg object-cover shadow-md" />
+                            <img src="{{ asset('storage/' . $currentBanner) }}" alt="Banner hiện tại" class="h-40 w-full max-w-md rounded-xl object-cover shadow-lg border-2 border-gray-300 dark:border-gray-600" />
                             <button 
                                 type="button" 
                                 wire:click="removeCurrentBanner"
-                                class="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white hover:bg-red-600 shadow-lg"
+                                class="absolute -right-3 -top-3 flex h-8 w-8 items-center justify-center rounded-full bg-red-500 text-white hover:bg-red-600 shadow-xl transition-all hover:scale-110"
+                                title="Xóa banner này"
                             >
-                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                                 </svg>
                             </button>
+                        </div>
+                        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                            💡 Click <strong>X</strong> để xóa banner này, sau đó chọn banner mới
+                        </p>
+                    </div>
+                @endif
+
+                {{-- Banner mới đã chọn --}}
+                @if ($newBanner)
+                    <div class="relative inline-block">
+                        <p class="text-xs font-semibold text-amber-600 dark:text-amber-400 mb-2">Banner mới đã chọn:</p>
+                        <img src="{{ $newBanner->temporaryUrl() }}" alt="Preview Banner Mới" class="h-40 w-full max-w-md rounded-xl object-cover shadow-lg border-2 border-amber-500" />
+                        <button 
+                            type="button" 
+                            wire:click="$set('newBanner', null)"
+                            class="absolute -right-3 -top-3 flex h-8 w-8 items-center justify-center rounded-full bg-red-500 text-white hover:bg-red-600 shadow-xl transition-all hover:scale-110"
+                            title="Hủy chọn banner mới"
+                        >
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                        <div class="mt-2 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                            ✓ Banner mới - Click X để chọn lại
                         </div>
                     </div>
                 @endif
 
-                {{-- Upload banner mới --}}
-                <div class="flex items-center gap-4">
-                    <label class="flex cursor-pointer items-center gap-2 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 px-6 py-4 hover:border-amber-500 hover:bg-amber-50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-amber-500 dark:hover:bg-amber-900/20 transition-all">
-                        <svg class="h-6 w-6 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {{-- Nút chọn banner (chỉ hiện khi không có banner hiện tại hoặc đã xóa) --}}
+                @if(!$currentBanner && !$newBanner)
+                    <label class="flex cursor-pointer items-center justify-center gap-3 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 px-6 py-8 hover:border-amber-500 hover:bg-amber-50 dark:border-gray-600 dark:bg-gray-700 dark:hover:border-amber-500 dark:hover:bg-amber-900/20 transition-all max-w-md">
+                        <svg class="h-8 w-8 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                         </svg>
-                        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
-                            {{ $currentBanner ? 'Thay đổi banner' : 'Chọn ảnh banner' }}
-                        </span>
+                        <div class="text-center">
+                            <span class="block text-sm font-semibold text-gray-700 dark:text-gray-300">Chọn ảnh banner</span>
+                            <span class="block text-xs text-gray-500 dark:text-gray-400 mt-1">Chỉ chọn 1 ảnh</span>
+                        </div>
                         <input type="file" wire:model="newBanner" accept="image/*" class="hidden" />
                     </label>
-                    @if ($newBanner)
-                        <div class="relative">
-                            <img src="{{ $newBanner->temporaryUrl() }}" alt="Preview" class="h-20 w-32 rounded-lg object-cover shadow-md" />
-                            <button 
-                                type="button" 
-                                wire:click="$set('newBanner', null)"
-                                class="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white hover:bg-red-600 shadow-lg"
-                            >
-                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                </svg>
-                            </button>
-                        </div>
-                    @endif
-                </div>
-                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Định dạng: JPG, PNG. Tối đa 2MB.</p>
+                @endif
+                
+                <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                    <span class="font-semibold">Lưu ý:</span> Chỉ chọn 1 ảnh duy nhất. Định dạng: JPG, PNG. Tối đa 2MB.
+                </p>
                 @error('newBanner') 
                     <p class="mt-2 text-sm text-red-600 dark:text-red-400">{{ $message }}</p> 
                 @enderror

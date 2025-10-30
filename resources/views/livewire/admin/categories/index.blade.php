@@ -63,7 +63,10 @@ class extends Component
     #[Url(as: 'posts', history: true)]
     public string $filterPosts = 'all'; // all, has_posts, no_posts
     #[Url(as: 'date', history: true)]
-    public string $filterDate = 'all'; // all, today, last_7_days, last_30_days, older
+    public string $filterDate = 'all'; // all, today, last_7_days, last_30_days, older, specific
+    
+    #[Url(as: 'specific_date', history: true)]
+    public string $specificDate = ''; // Ngày cụ thể được chọn
 
     // --- Post Viewing Modal ---
     public ?Category $viewingCategory = null;
@@ -116,6 +119,8 @@ class extends Component
             $query->where('created_at', '>=', now()->subDays(30));
         } elseif ($this->filterDate === 'older') {
             $query->where('created_at', '<', now()->subDays(30));
+        } elseif ($this->filterDate === 'specific' && !empty($this->specificDate)) {
+            $query->whereDate('created_at', $this->specificDate);
         }
         
         // Áp dụng sorting trực tiếp bằng SQL
@@ -198,6 +203,14 @@ class extends Component
 
     public function updatedFilterDate(): void
     {
+        if ($this->filterDate !== 'specific') {
+            $this->specificDate = '';
+        }
+        $this->resetPage();
+    }
+
+    public function updatedSpecificDate(): void
+    {
         $this->resetPage();
     }
 
@@ -241,7 +254,7 @@ class extends Component
      */
     public function exportToCSV()
     {
-        $fileName = 'danh-muc-' . now()->format('Y-m-d_H-i-s') . '.xlsx';
+        $fileName = 'danh-muc-' . now()->format('Y-m-d_H-i-s') . '.csv';
         
         $categories = Category::with(['parent'])
             ->withCount('posts')
@@ -263,24 +276,24 @@ class extends Component
             // BOM cho UTF-8 (để Excel hiển thị tiếng Việt đúng)
             fprintf($file, chr(0xEF).chr(0xBB).chr(0xBF));
             
-            // Thêm dòng này để Excel tự động nhận biết delimiter là dấu chấm phẩy
-            fwrite($file, "sep=;\n");
+            // Helper function để escape CSV field
+            $escapeCsvField = function($field) {
+                // Chuyển đổi sang string và escape double quotes
+                $field = strval($field);
+                // Nếu có dấu chấm phẩy, dấu ngoặc kép, hoặc xuống dòng -> bọc bằng dấu ngoặc kép
+                if (str_contains($field, ';') || str_contains($field, '"') || str_contains($field, "\n")) {
+                    $field = '"' . str_replace('"', '""', $field) . '"';
+                }
+                return $field;
+            };
             
-            // Header row - dùng dấu chấm phẩy cho Excel Windows
-            fputcsv($file, [
-                'ID',
-                'Tên Danh Mục',
-                'Danh Mục Gốc',
-                'Slug',
-                'Số Bài Viết',
-                'Hiển Thị',
-                'Ngày Tạo',
-                'Ngày Cập Nhật',
-            ], ';');
+            // Header row
+            $headers = ['ID', 'Tên Danh Mục', 'Danh Mục Gốc', 'Slug', 'Số Bài Viết', 'Hiển Thị', 'Ngày Tạo', 'Ngày Cập Nhật'];
+            fwrite($file, implode(';', array_map($escapeCsvField, $headers)) . "\n");
             
-            // Data rows - dùng dấu chấm phẩy
+            // Data rows
             foreach ($categories as $category) {
-                fputcsv($file, [
+                $row = [
                     $category->id,
                     $category->name,
                     $category->parent ? $category->parent->name : '(Danh mục gốc)',
@@ -289,7 +302,8 @@ class extends Component
                     $category->is_visible ? 'Có' : 'Không',
                     $category->created_at->format('d/m/Y H:i'),
                     $category->updated_at->format('d/m/Y H:i'),
-                ], ';');
+                ];
+                fwrite($file, implode(';', array_map($escapeCsvField, $row)) . "\n");
             }
             
             fclose($file);
@@ -612,10 +626,10 @@ class extends Component
             <button 
                 wire:click="exportToCSV"
                 class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
-                title="Xuất file Excel"
+                title="Xuất file CSV (mở được bằng Excel)"
             >
                 <flux:icon.arrow-down-tray class="size-5" />
-                <span>Xuất Excel</span>
+                <span>Xuất CSV</span>
             </button>
   </div>
 
@@ -654,40 +668,53 @@ class extends Component
             <!-- Lọc theo loại -->
             <div class="flex-1 min-w-[180px]">
                 <select wire:model.live="filterType" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                    <option value="all">📁 Tất cả loại</option>
-                    <option value="root">📂 Chỉ danh mục gốc</option>
-                    <option value="child">📄 Chỉ danh mục con</option>
+                    <option value="all">Tất cả loại</option>
+                    <option value="root">Chỉ danh mục gốc</option>
+                    <option value="child">Chỉ danh mục con</option>
                 </select>
 </div>
 
             <!-- Lọc theo trạng thái -->
             <div class="flex-1 min-w-[180px]">
                 <select wire:model.live="filterVisible" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                    <option value="all">👁️ Tất cả trạng thái</option>
-                    <option value="visible">✅ Đang hiển thị</option>
-                    <option value="hidden">❌ Đang ẩn</option>
+                    <option value="all"> Tất cả trạng thái</option>
+                    <option value="visible">Đang hiển thị</option>
+                    <option value="hidden">Đang ẩn</option>
                 </select>
             </div>
             
             <!-- Lọc theo bài viết -->
             <div class="flex-1 min-w-[180px]">
                 <select wire:model.live="filterPosts" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                    <option value="all">📝 Tất cả</option>
-                    <option value="has_posts">✍️ Có bài viết</option>
-                    <option value="no_posts">📭 Chưa có bài viết</option>
+                    <option value="all"> Tất cả</option>
+                    <option value="has_posts">Có bài viết</option>
+                    <option value="no_posts"> Chưa có bài viết</option>
                 </select>
             </div>
             
             <!-- Lọc theo ngày tạo -->
             <div class="flex-1 min-w-[180px]">
                 <select wire:model.live="filterDate" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                    <option value="all">📅 Tất cả ngày</option>
-                    <option value="today">🆕 Hôm nay</option>
-                    <option value="last_7_days">📆 7 ngày qua</option>
-                    <option value="last_30_days">📅 30 ngày qua</option>
-                    <option value="older">⏰ Cũ hơn 30 ngày</option>
+                    <option value="all"> Tất cả ngày</option>
+                    <option value="today"> Hôm nay</option>
+                    <option value="last_7_days"> 7 ngày qua</option>
+                    <option value="last_30_days">30 ngày qua</option>
+                    <option value="older">Cũ hơn 30 ngày</option>
+                    <option value="specific">Chọn ngày cụ thể</option>
                 </select>
             </div>
+
+            <!-- Date picker khi chọn "Chọn ngày cụ thể" -->
+            @if($filterDate === 'specific')
+                <div class="flex-1 min-w-[180px]">
+                    <input 
+                        type="date" 
+                        wire:model.live="specificDate"
+                        class="w-full rounded-lg border-2 border-cyan-500 px-3 py-2 text-sm focus:border-cyan-600 focus:ring-2 focus:ring-cyan-200 dark:border-cyan-600 dark:bg-gray-700 dark:text-gray-200 dark:focus:border-cyan-600"
+                        placeholder="Chọn ngày"
+                    />
+                </div>
+            @endif
             
             <!-- Nút reset filter -->
             <button 
@@ -787,7 +814,7 @@ class extends Component
                             </button>
                         </th>
                         {{-- Cột Hành động - Không Sort --}}
-                        <th scope="col" class="px-6 py-4 text-right text-xs font-bold uppercase tracking-wider text-white whitespace-nowrap">Hành động</th>
+                        <th scope="col" class="px-6 py-4 text-center text-xs font-bold uppercase tracking-wider text-white whitespace-nowrap">Hành động</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white dark:bg-gray-800 divide-y divide-gray-100 dark:divide-gray-700">
@@ -844,10 +871,29 @@ class extends Component
                              {{-- Cột Ngày tạo --}}
                              <td class="whitespace-nowrap px-6 py-4 text-sm text-gray-500 dark:text-gray-400">{{ $category->created_at->format('d/m/Y') }}</td>
                              {{-- Cột Hành động --}}
-                             <td class="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
-                                 <div class="flex items-center justify-end gap-1">
-                                 <x-button wire:click="edit({{ $category->id }})" size="sm" icon="pencil-square" title="Sửa"/>
-                                 <x-button wire:click="delete({{ $category->id }})" wire:confirm="Xóa '{{ $category->name }}'? Không thể xóa nếu có con hoặc bài viết." variant="danger" size="sm" icon="trash" title="Xóa"/>
+                             <td class="whitespace-nowrap px-6 py-4 text-center">
+                                 <div class="flex items-center justify-center gap-2">
+                                     {{-- Nút Sửa --}}
+                                     <button 
+                                         wire:click="edit({{ $category->id }})"
+                                         title="Sửa"
+                                         class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-yellow-100 text-yellow-600 hover:bg-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-400 dark:hover:bg-yellow-900/50 transition-colors"
+                                     >
+                                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                         </svg>
+                                     </button>
+                                     {{-- Nút Xóa --}}
+                                     <button 
+                                         wire:click="delete({{ $category->id }})"
+                                         wire:confirm="Bạn có chắc chắn muốn xóa danh mục '{{ $category->name }}'? Không thể xóa nếu có danh mục con hoặc bài viết."
+                                         title="Xóa"
+                                         class="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-red-100 text-red-600 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-400 dark:hover:bg-red-900/50 transition-colors"
+                                     >
+                                         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                         </svg>
+                                     </button>
                                  </div>
                              </td>
                          </tr>

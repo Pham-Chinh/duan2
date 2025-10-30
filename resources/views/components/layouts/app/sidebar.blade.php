@@ -111,28 +111,7 @@
 
             <flux:spacer />
 
-            {{-- External links --}}
-            <div class="bg-white/50 dark:bg-zinc-800/50 rounded-xl p-2.5 backdrop-blur-sm border border-gray-200/50 dark:border-zinc-700/50">
-                <flux:navlist variant="outline" class="space-y-1">
-                    <flux:navlist.item 
-                        icon="folder-git-2" 
-                        href="https://github.com/laravel/livewire-starter-kit" 
-                        target="_blank"
-                        class="text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-950/30 transition-all duration-300 rounded-lg font-medium text-sm"
-                    >
-                        {{ __('Repository') }}
-                    </flux:navlist.item>
 
-                    <flux:navlist.item 
-                        icon="book-open-text" 
-                        href="https://laravel.com/docs/starter-kits#livewire" 
-                        target="_blank"
-                        class="text-gray-600 dark:text-gray-400 hover:text-cyan-600 dark:hover:text-cyan-400 hover:bg-cyan-50/50 dark:hover:bg-cyan-950/30 transition-all duration-300 rounded-lg font-medium text-sm"
-                    >
-                        {{ __('Documentation') }}
-                    </flux:navlist.item>
-                </flux:navlist>
-            </div>
 
             {{-- Desktop User Menu --}}
             <div class="bg-gradient-to-r from-blue-500 to-cyan-500 rounded-2xl p-3 shadow-lg">

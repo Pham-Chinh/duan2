@@ -9,6 +9,7 @@ use Livewire\WithPagination;
     use App\Models\Category;
     use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
     new #[Layout('components.layouts.app')] #[Title('Quản lý Bài viết')]
     class extends Component
@@ -51,13 +52,22 @@ use Illuminate\Support\Str;
     public string $filterGallery = 'all'; // all, has_gallery, no_gallery
     
     #[Url(as: 'date', history: true)]
-    public string $filterDate = 'all'; // all, today, last_7_days, last_30_days, older
+    public string $filterDate = 'all'; // all, today, last_7_days, last_30_days, older, specific
+    
+    #[Url(as: 'specific_date', history: true)]
+    public string $specificDate = ''; // Ngày cụ thể được chọn
 
     public function updatedFilterStatus(): void { $this->resetPage(); }
     public function updatedFilterCategory(): void { $this->resetPage(); }
     public function updatedFilterBanner(): void { $this->resetPage(); }
     public function updatedFilterGallery(): void { $this->resetPage(); }
-    public function updatedFilterDate(): void { $this->resetPage(); }
+    public function updatedFilterDate(): void { 
+        if ($this->filterDate !== 'specific') {
+            $this->specificDate = '';
+        }
+        $this->resetPage(); 
+    }
+    public function updatedSpecificDate(): void { $this->resetPage(); }
 
     // --- Data Properties ---
         public Collection $categories;
@@ -138,6 +148,8 @@ use Illuminate\Support\Str;
             $query->where('created_at', '>=', now()->subDays(30));
         } elseif ($this->filterDate === 'older') {
             $query->where('created_at', '<', now()->subDays(30));
+        } elseif ($this->filterDate === 'specific' && !empty($this->specificDate)) {
+            $query->whereDate('created_at', $this->specificDate);
         }
 
         // Apply search
@@ -201,6 +213,88 @@ use Illuminate\Support\Str;
             default => 'Không rõ',
         };
     }
+
+    /**
+     * Xuất dữ liệu bài viết ra file Excel
+     */
+    public function exportToCSV()
+    {
+        $fileName = 'bai-viet-' . now()->format('Y-m-d_H-i-s') . '.csv';
+        
+        $posts = Post::with(['category.parent', 'user'])
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        $headers = [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="' . $fileName . '"',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+        ];
+
+        return new StreamedResponse(function() use ($posts) {
+            $file = fopen('php://output', 'w');
+            
+            // BOM cho UTF-8 (để Excel hiển thị tiếng Việt đúng)
+            fprintf($file, chr(0xEF).chr(0xBB).chr(0xBF));
+            
+            // Helper function để escape CSV field
+            $escapeCsvField = function($field) {
+                // Chuyển đổi sang string và escape double quotes
+                $field = strval($field);
+                // Nếu có dấu chấm phẩy, dấu ngoặc kép, hoặc xuống dòng -> bọc bằng dấu ngoặc kép
+                if (str_contains($field, ';') || str_contains($field, '"') || str_contains($field, "\n")) {
+                    $field = '"' . str_replace('"', '""', $field) . '"';
+                }
+                return $field;
+            };
+            
+            // Header row
+            $headerRow = ['ID', 'Tiêu đề', 'Danh Mục', 'Danh Mục Gốc', 'Tác giả', 'Trạng thái', 'Có Banner', 'Số ảnh Gallery', 'Ngày tạo', 'Ngày cập nhật'];
+            fwrite($file, implode(';', array_map($escapeCsvField, $headerRow)) . "\n");
+            
+            // Data rows
+            foreach ($posts as $post) {
+                // Xác định danh mục
+                $categoryName = 'N/A';
+                $parentCategoryName = 'N/A';
+                
+                if ($post->category) {
+                    if ($post->category->parent_id === null) {
+                        // Nếu là danh mục gốc
+                        $parentCategoryName = $post->category->name;
+                    } else {
+                        // Nếu là danh mục con
+                        $categoryName = $post->category->name;
+                        $parentCategoryName = $post->category->parent?->name ?? 'N/A';
+                    }
+                }
+                
+                // Đếm số ảnh gallery
+                $galleryCount = 0;
+                if ($post->gallery && is_array($post->gallery)) {
+                    $galleryCount = count($post->gallery);
+                }
+                
+                $row = [
+                    $post->id,
+                    $post->title,
+                    $categoryName === 'N/A' ? '(Danh mục gốc)' : $categoryName,
+                    $parentCategoryName,
+                    $post->user?->name ?? 'N/A',
+                    $this->getStatusLabel($post->status ?? 'draft'),
+                    $post->banner ? 'Có' : 'Không',
+                    $galleryCount,
+                    $post->created_at->format('d/m/Y H:i'),
+                    $post->updated_at->format('d/m/Y H:i'),
+                ];
+                fwrite($file, implode(';', array_map($escapeCsvField, $row)) . "\n");
+            }
+            
+            fclose($file);
+        }, 200, $headers);
+    }
 };
 ?>
 
@@ -229,7 +323,7 @@ use Illuminate\Support\Str;
 
         {{-- Action Bar --}}
         <div class="bg-gradient-to-r from-white via-blue-50 to-cyan-50 p-5 dark:from-zinc-800 dark:via-blue-950 dark:to-cyan-950 flex flex-wrap items-center gap-4 border-b-2 border-gray-100 dark:border-gray-700">
-            <!-- Nút thêm bài viết -->
+            <!-- Nút thêm bài viết và xuất excel -->
             <div class="flex flex-shrink-0 items-center gap-3">
                 <a 
                     href="{{ route('admin.posts.create') }}"
@@ -241,6 +335,17 @@ use Illuminate\Support\Str;
                     </svg>
                     <span>Thêm bài viết</span>
                 </a>
+
+                <button 
+                    wire:click="exportToCSV"
+                    class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:from-emerald-600 hover:to-green-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
+                    title="Xuất file CSV (mở được bằng Excel)"
+                >
+                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                    <span>Xuất CSV</span>
+                </button>
             </div>
 
             <!-- Thanh tìm kiếm với gradient border -->
@@ -249,7 +354,7 @@ use Illuminate\Support\Str;
                 <input
                     type="search"
                     wire:model.live.debounce.300ms="searchQuery"
-                    placeholder="🔍 Tìm kiếm bài viết..."
+                    placeholder="Tìm kiếm bài viết..."
                     class="relative block w-full appearance-none rounded-full border-2 border-gray-200 bg-white py-3 pl-6 pr-16 shadow-md text-sm font-medium
                            focus:border-transparent focus:ring-4 focus:ring-cyan-200
                            dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:placeholder-gray-400
@@ -282,20 +387,19 @@ use Illuminate\Support\Str;
                 <!-- Lọc theo trạng thái -->
                 <div class="flex-1 min-w-[180px]">
                     <select wire:model.live="filterStatus" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                        <option value="all">📋 Tất cả trạng thái</option>
-                        <option value="draft">📝 Bản nháp</option>
-                        <option value="published">✅ Đã đăng</option>
-                        <option value="archived">📦 Lưu trữ</option>
+                        <option value="all">Tất cả trạng thái</option>
+                        <option value="draft">Bản nháp</option>
+                        <option value="published">Đã đăng</option>
                     </select>
                             </div>
 
                 <!-- Lọc theo danh mục -->
                 <div class="flex-1 min-w-[180px]">
                     <select wire:model.live="filterCategory" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                        <option value="all">📁 Tất cả danh mục</option>
+                        <option value="all">Tất cả danh mục</option>
                         @foreach($categories as $category)
                             @if($category->parent_id === null)
-                                <option value="{{ $category->id }}">📂 {{ $category->name }}</option>
+                                <option value="{{ $category->id }}">{{ $category->name }}</option>
                                 @foreach($categories->where('parent_id', $category->id) as $child)
                                     <option value="{{ $child->id }}">└─ {{ $child->name }}</option>
                                 @endforeach
@@ -307,31 +411,44 @@ use Illuminate\Support\Str;
                 <!-- Lọc theo banner -->
                 <div class="flex-1 min-w-[180px]">
                     <select wire:model.live="filterBanner" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                        <option value="all">🖼️ Tất cả banner</option>
-                        <option value="has_banner">✅ Có banner</option>
-                        <option value="no_banner">❌ Không có banner</option>
+                        <option value="all">Tất cả banner</option>
+                        <option value="has_banner">Có banner</option>
+                        <option value="no_banner">Không có banner</option>
                     </select>
-                            </div>
+                </div>
 
                 <!-- Lọc theo gallery -->
                 <div class="flex-1 min-w-[180px]">
                     <select wire:model.live="filterGallery" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                        <option value="all">🎨 Tất cả gallery</option>
-                        <option value="has_gallery">✅ Có gallery</option>
-                        <option value="no_gallery">❌ Không có gallery</option>
+                        <option value="all">Tất cả gallery</option>
+                        <option value="has_gallery">Có gallery</option>
+                        <option value="no_gallery">Không có gallery</option>
                     </select>
                             </div>
 
                 <!-- Lọc theo ngày tạo -->
                 <div class="flex-1 min-w-[180px]">
                     <select wire:model.live="filterDate" class="w-full rounded-lg border-2 border-gray-200 px-3 py-2 text-sm focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200">
-                        <option value="all">📅 Tất cả ngày</option>
-                        <option value="today">🆕 Hôm nay</option>
-                        <option value="last_7_days">📆 7 ngày qua</option>
-                        <option value="last_30_days">📅 30 ngày qua</option>
-                        <option value="older">⏰ Cũ hơn 30 ngày</option>
+                        <option value="all">Tất cả ngày</option>
+                        <option value="today">Hôm nay</option>
+                        <option value="last_7_days">7 ngày qua</option>
+                        <option value="last_30_days">30 ngày qua</option>
+                        <option value="older"> Cũ hơn 30 ngày</option>
+                        <option value="specific">Chọn ngày cụ thể</option>
                     </select>
+                </div>
+
+                <!-- Date picker khi chọn "Chọn ngày cụ thể" -->
+                @if($filterDate === 'specific')
+                    <div class="flex-1 min-w-[180px]">
+                        <input 
+                            type="date" 
+                            wire:model.live="specificDate"
+                            class="w-full rounded-lg border-2 border-cyan-500 px-3 py-2 text-sm focus:border-cyan-600 focus:ring-2 focus:ring-cyan-200 dark:border-cyan-600 dark:bg-gray-700 dark:text-gray-200 dark:focus:border-cyan-600"
+                            placeholder="Chọn ngày"
+                        />
                     </div>
+                @endif
 
                 <!-- Nút reset filter -->
                 <button 

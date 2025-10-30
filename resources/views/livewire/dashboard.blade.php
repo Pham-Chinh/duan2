@@ -139,7 +139,9 @@
     </div>
 
     <!-- Chart Section -->
-    <div class="rounded-2xl bg-white p-6 shadow-lg dark:bg-neutral-800">
+    <div class="rounded-2xl bg-white p-6 shadow-lg dark:bg-neutral-800" 
+         x-data="{ chartType: @entangle('chartType').live }"
+         x-effect="if (chartType) { console.log('Chart type changed to:', chartType); setTimeout(() => { if (typeof initChart === 'function') initChart(); }, 100); }">
         <!-- Chart Header -->
         <div class="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -353,11 +355,21 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('livewire:init', () => {
     setTimeout(initChart, 100);
     
-    // Sau mỗi lần DOM của component được morph xong (khi update state)
+    // Livewire v3: Hook vào sau khi component được update
     Livewire.hook('morph.updated', ({ el, component }) => {
         // Chỉ init lại chart nếu đây là Dashboard component
         if (component && component.el.querySelector('#postsChart')) {
+            console.log('morph.updated - Re-initializing chart...');
             setTimeout(initChart, 100);
+        }
+    });
+    
+    // Livewire v3: Hook vào SAU KHI tất cả morphing hoàn tất
+    Livewire.hook('commit', ({ component, commit, respond }) => {
+        // Sau khi commit xong, kiểm tra xem có chart không
+        if (component.el.querySelector('#postsChart')) {
+            console.log('commit hook - Re-initializing chart...');
+            setTimeout(initChart, 150);
         }
     });
     
