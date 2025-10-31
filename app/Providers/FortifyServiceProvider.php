@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Laravel\Fortify\Fortify;
+use Laravel\Fortify\Contracts\LoginResponse;
+use Laravel\Fortify\Contracts\RegisterResponse;
 
 class FortifyServiceProvider extends ServiceProvider
 {
@@ -18,7 +20,33 @@ class FortifyServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Custom login response based on user role
+        $this->app->singleton(LoginResponse::class, function () {
+            return new class implements LoginResponse {
+                public function toResponse($request)
+                {
+                    // Check user role and redirect accordingly
+                    // Admin and Editor go to dashboard
+                    if (auth()->user()->canAccessDashboard()) {
+                        return redirect()->intended('/dashboard');
+                    }
+                    
+                    // Regular users go to homepage
+                    return redirect()->intended('/');
+                }
+            };
+        });
+
+        // Custom register response based on user role
+        $this->app->singleton(RegisterResponse::class, function () {
+            return new class implements RegisterResponse {
+                public function toResponse($request)
+                {
+                    // After registration, users always go to home
+                    return redirect('/');
+                }
+            };
+        });
     }
 
     /**

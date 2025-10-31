@@ -130,14 +130,38 @@ class Dashboard extends Component
     
     private function getYearlyData()
     {
-        // Chỉ hiển thị năm hiện tại
+        // Lấy năm đầu tiên có bài viết
+        $firstPostYear = Post::selectRaw('MIN(YEAR(created_at)) as min_year')->value('min_year');
         $currentYear = now()->year;
         
-        $totalPosts = Post::whereYear('created_at', $currentYear)->count();
+        // Nếu chưa có bài viết nào, trả về năm hiện tại với giá trị 0
+        if (!$firstPostYear) {
+            return [
+                'labels' => [(string)$currentYear],
+                'values' => [0],
+            ];
+        }
+        
+        // Lấy số lượng bài viết theo từng năm
+        $postsPerYear = Post::select(
+            DB::raw('YEAR(created_at) as year'),
+            DB::raw('COUNT(*) as count')
+        )
+        ->groupBy('year')
+        ->orderBy('year')
+        ->get()
+        ->pluck('count', 'year');
+        
+        $chartData = collect();
+        
+        // Tạo dữ liệu từ năm đầu tiên đến năm hiện tại
+        for ($year = $firstPostYear; $year <= $currentYear; $year++) {
+            $chartData[$year] = $postsPerYear->get($year, 0);
+        }
         
         return [
-            'labels' => ['Năm ' . $currentYear],
-            'values' => [$totalPosts],
+            'labels' => $chartData->keys()->map(fn($y) => (string)$y)->toArray(), // "2020", "2021"...
+            'values' => $chartData->values()->toArray(),
         ];
     }
 }

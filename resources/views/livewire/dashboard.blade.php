@@ -152,7 +152,7 @@
                     @elseif($chartType === 'month')
                         Số lượng bài viết theo tháng (Năm {{ now()->year }})
                     @else
-                        Tổng số bài viết năm {{ now()->year }}
+                        Số lượng bài viết theo năm
                     @endif
                 </p>
             </div>

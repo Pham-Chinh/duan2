@@ -20,6 +20,7 @@
         'banner',
         'gallery',
         'status',
+        'views',
     ];
     
     protected $casts = [
@@ -75,6 +76,15 @@
         public function user(): BelongsTo
         {
             return $this->belongsTo(User::class);
+        }
+        public function scopePublished($query)
+        {
+            return $query->where('status', 'published');
+        }
+        //tang luot xem
+        public function incrementViews()
+        {
+            $this->increment('views');
         }
     }
     

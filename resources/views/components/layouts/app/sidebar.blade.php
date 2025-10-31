@@ -106,6 +106,29 @@
                         </span>
                     </flux:navlist.item>
                     @endif
+                    
+                    {{-- User Management - ONLY for Admin --}}
+                    @if(Route::has('admin.users') && auth()->user()->canManageUsers())
+                    <flux:navlist.item 
+                        icon="user-group" 
+                        :href="route('admin.users')" 
+                        :current="request()->routeIs('admin.users*')" 
+                        wire:navigate
+                        class="group relative text-gray-700 dark:text-gray-200 font-medium hover:text-indigo-600 dark:hover:text-indigo-400 transition-all duration-300 rounded-xl overflow-hidden {{ request()->routeIs('admin.users*') ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white dark:text-white shadow-lg font-semibold' : 'hover:bg-indigo-50 dark:hover:bg-indigo-950/30' }}"
+                    >
+                        @if(!request()->routeIs('admin.users*'))
+                        <span class="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 opacity-0 group-hover:opacity-100 transition-opacity"></span>
+                        @endif
+                        <span class="relative flex items-center gap-2">
+                            <span class="flex-1">{{ __('Quản lý Tài khoản') }}</span>
+                            @if(request()->routeIs('admin.users*'))
+                            <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                            </svg>
+                            @endif
+                        </span>
+                    </flux:navlist.item>
+                    @endif
                 </flux:navlist.group>
             </flux:navlist>
 
