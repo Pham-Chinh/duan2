@@ -4,6 +4,15 @@
 
         <!-- Session Status -->
         <x-auth-session-status class="text-center" :status="session('status')" />
+        
+        <!-- Session Timeout Message -->
+        @if(session('session_timeout'))
+            <div class="rounded-lg bg-amber-100 dark:bg-amber-900/30 border border-amber-400 dark:border-amber-700 px-4 py-3 text-center">
+                <p class="text-sm font-medium text-amber-800 dark:text-amber-300">
+                    {{ session('session_timeout') }}
+                </p>
+            </div>
+        @endif
 
         <form method="POST" action="{{ route('login.store') }}" class="flex flex-col gap-6">
             @csrf

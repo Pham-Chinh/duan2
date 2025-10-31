@@ -99,8 +99,49 @@
     {{-- Quảng cáo --}}
     <div class="bg-gray-200 dark:bg-gray-700 rounded-xl shadow-lg p-6 text-center">
         <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">Quảng cáo</p>
-        <div class="bg-gradient-to-br from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-500 rounded-lg h-64 flex items-center justify-center">
-            <span class="text-gray-600 dark:text-gray-300 text-sm">Banner 300x250</span>
+        <div class="relative bg-white dark:bg-gray-800 rounded-lg h-64 overflow-hidden">
+            <div x-data="{ 
+                currentIndex: 0,
+                images: [
+                    'https://images.unsplash.com/photo-1567427017947-545c5f8d16ad?w=300&h=250&fit=crop',
+                    'https://images.unsplash.com/photo-1551650975-87deedd944c3?w=300&h=250&fit=crop',
+                    'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=300&h=250&fit=crop',
+                    'https://images.unsplash.com/photo-1519183073328-330ccda8f863?w=300&h=250&fit=crop',
+                    'https://images.unsplash.com/photo-1454165804606-c3d57bc86b40?w=300&h=250&fit=crop'
+                ],
+                init() {
+                    setInterval(() => {
+                        this.currentIndex = (this.currentIndex + 1) % this.images.length;
+                    }, 3000);
+                }
+            }" class="relative h-full">
+                {{-- Images --}}
+                <template x-for="(image, index) in images" :key="index">
+                    <div 
+                        x-show="currentIndex === index"
+                        x-transition:enter="transition ease-out duration-300"
+                        x-transition:enter-start="opacity-0"
+                        x-transition:enter-end="opacity-100"
+                        x-transition:leave="transition ease-in duration-300"
+                        x-transition:leave-start="opacity-100"
+                        x-transition:leave-end="opacity-0"
+                        class="absolute inset-0"
+                    >
+                        <img :src="image" alt="Advertisement" class="w-full h-full object-cover" />
+                    </div>
+                </template>
+                
+                {{-- Dots indicator --}}
+                <div class="absolute bottom-2 left-0 right-0 flex justify-center gap-2">
+                    <template x-for="(image, index) in images" :key="index">
+                        <button 
+                            @click="currentIndex = index"
+                            class="w-2 h-2 rounded-full transition-all"
+                            :class="currentIndex === index ? 'bg-white' : 'bg-white/50'"
+                        ></button>
+                    </template>
+                </div>
+            </div>
         </div>
     </div>
 </aside>

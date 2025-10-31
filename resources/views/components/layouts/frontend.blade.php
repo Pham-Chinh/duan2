@@ -61,6 +61,9 @@
     {{-- Footer --}}
     @include('components.frontend.footer')
 
+    {{-- Session Timeout (chỉ cho role user) --}}
+    <x-session-timeout />
+
     {{-- Scripts --}}
     @livewireScripts
     @stack('scripts')

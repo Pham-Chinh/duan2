@@ -136,20 +136,23 @@
     </article>
 
     {{-- Schema.org JSON-LD --}}
+    @php
+        $jsonLd = [
+            '@context' => 'https://schema.org',
+            '@type' => 'Article',
+            'headline' => $post->title,
+            'image' => $post->banner ? Storage::url($post->banner) : '',
+            'datePublished' => $post->created_at->toIso8601String(),
+            'dateModified' => $post->updated_at->toIso8601String(),
+            'author' => [
+                '@type' => 'Person',
+                'name' => $post->user->name ?? 'Admin'
+            ],
+        ];
+    @endphp
     @push('scripts')
     <script type="application/ld+json">
-    {
-        "@context": "https://schema.org",
-        "@type": "Article",
-        "headline": "{{ $post->title }}",
-        "image": "{{ $post->banner ? Storage::url($post->banner) : '' }}",
-        "datePublished": "{{ $post->created_at->toIso8601String() }}",
-        "dateModified": "{{ $post->updated_at->toIso8601String() }}",
-        "author": {
-            "@type": "Person",
-            "name": "{{ $post->user->name ?? 'Admin' }}"
-        }
-    }
+    {!! json_encode($jsonLd, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) !!}
     </script>
     @endpush
 </x-layouts.frontend>

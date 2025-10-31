@@ -69,8 +69,28 @@ class extends Component
      */
     private function savePost(string $status): void
     {
+        // Content đã được sync từ JavaScript trước khi gọi method này
+
         // Validate basic fields
         $this->validate();
+
+        // Validate content (Quill editor có thể trả về <p><br></p> khi rỗng)
+        // Xử lý nhiều trường hợp: HTML tags, &nbsp;, whitespace khi paste
+        // Xóa hết HTML tags để chỉ lấy text
+        $strippedContent = strip_tags($this->content);
+        // Decode HTML entities (&nbsp;, &amp;, etc.)
+        $strippedContent = html_entity_decode($strippedContent, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        // Thay thế nhiều khoảng trắng thành 1 khoảng trắng
+        $strippedContent = preg_replace('/\s+/', ' ', $strippedContent);
+        // Trim đầu cuối
+        $strippedContent = trim($strippedContent);
+        
+        // Check xem còn text thực sự không (sau khi đã xóa hết tags và whitespace)
+        if (empty($strippedContent)) {
+            $this->addError('content', 'Vui lòng nhập nội dung bài viết.');
+            $this->dispatch('toast', message: 'Vui lòng nhập nội dung bài viết!', type: 'error');
+            return;
+        }
 
         // Validate gallery (max 5 images)
         $filteredGallery = array_filter($this->gallery);
@@ -123,6 +143,28 @@ class extends Component
         } catch (\Exception $e) {
             $this->dispatch('toast-notification', type: 'error', message: 'Có lỗi xảy ra: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Sync và lưu nháp
+     */
+    public function syncAndSaveDraft(): void
+    {
+        // Content sẽ được sync từ JavaScript trước khi method này được gọi
+        // Đợi một chút để đảm bảo content đã sync
+        usleep(100000); // 0.1 giây
+        $this->saveDraft();
+    }
+
+    /**
+     * Sync và đăng bài
+     */
+    public function syncAndPublish(): void
+    {
+        // Content sẽ được sync từ JavaScript trước khi method này được gọi
+        // Đợi một chút để đảm bảo content đã sync
+        usleep(100000); // 0.1 giây
+        $this->publish();
     }
 
     /**
@@ -415,7 +457,7 @@ class extends Component
                     {{-- Nút Lưu nháp --}}
                     <button 
                         type="button"
-                        wire:click="saveDraft"
+                        x-on:click="window.syncQuillContent(); setTimeout(() => $wire.syncAndSaveDraft(), 150)"
                         class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-gray-500 to-gray-600 px-6 py-3 text-sm font-semibold text-white shadow-lg hover:from-gray-600 hover:to-gray-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
                     >
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -427,7 +469,7 @@ class extends Component
                     {{-- Nút Đăng bài --}}
                     <button 
                         type="button"
-                        wire:click="publish"
+                        x-on:click="window.syncQuillContent(); setTimeout(() => $wire.syncAndPublish(), 150)"
                         class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 text-sm font-semibold text-white shadow-lg hover:from-emerald-600 hover:to-teal-700 hover:shadow-xl transition-all duration-300 hover:scale-105 active:scale-95"
                     >
                         <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -495,15 +537,87 @@ class extends Component
                     ['blockquote', 'code-block'],
                     ['link', 'image', 'video'],
                     ['clean']
-                ]
+                ],
+                clipboard: {
+                    // Xử lý paste: giữ lại format cơ bản, loại bỏ style không mong muốn
+                    matchVisual: false
+                }
             }
         });
 
-        // Sync với Livewire
+        // Function để sync content với debounce
+        let syncTimeout;
+        function syncContent() {
+            clearTimeout(syncTimeout);
+            syncTimeout = setTimeout(function() {
+                if (quillInstance) {
+                    let content = quillInstance.root.innerHTML;
+                    @this.set('content', content);
+                }
+            }, 300); // Debounce 300ms
+        }
+
+        // Sync với Livewire - nhiều event để đảm bảo
         quillInstance.on('text-change', function() {
-            let content = quillInstance.root.innerHTML;
-            @this.set('content', content);
+            syncContent();
         });
+
+        // Sync khi editor change (bao gồm paste)
+        quillInstance.on('editor-change', function(eventName) {
+            if (eventName === 'text-change' || eventName === 'selection-change') {
+                syncContent();
+            }
+        });
+
+        // Sync khi blur (user click ra khỏi editor)
+        quillInstance.on('selection-change', function(range) {
+            if (!range) {
+                syncContent();
+            }
+        });
+
+        // Bắt paste event để sync ngay
+        quillInstance.root.addEventListener('paste', function() {
+            setTimeout(function() {
+                syncContent();
+            }, 100);
+        });
+    }
+
+    // Sync content trước khi Livewire commit (trước khi gửi request)
+    document.addEventListener('livewire:init', () => {
+        Livewire.hook('commit', ({ component }) => {
+            // Sync content từ Quill trước khi submit
+            if (typeof quillInstance !== 'undefined' && quillInstance) {
+                let content = quillInstance.root.innerHTML;
+                // Tìm Livewire component hiện tại và sync
+                let livewireComponent = Livewire.find(component?.id || component?.__instance?.id);
+                if (livewireComponent) {
+                    livewireComponent.set('content', content);
+                } else {
+                    // Fallback: dùng @this nếu trong Alpine context
+                    if (typeof window.$wire !== 'undefined') {
+                        window.$wire.set('content', content);
+                    }
+                }
+            }
+        });
+    });
+
+    // Helper function để sync content (gọi từ button onclick)
+    // Phải là global function để Alpine có thể gọi
+    window.syncQuillContent = function() {
+        if (typeof quillInstance !== 'undefined' && quillInstance) {
+            let content = quillInstance.root.innerHTML;
+            // Tìm Livewire component và sync
+            if (typeof Livewire !== 'undefined') {
+                Livewire.all().forEach(component => {
+                    if (component.__instance && component.get('content') !== undefined) {
+                        component.set('content', content);
+                    }
+                });
+            }
+        }
     }
 
     document.addEventListener('livewire:navigated', () => {

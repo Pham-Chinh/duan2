@@ -1,6 +1,8 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Session;
 use Laravel\Fortify\Features;
 use Livewire\Volt\Volt;
 
@@ -20,6 +22,21 @@ Route::get('/category/{slug}', function ($slug) {
 Route::get('/search', function () {
     return view('frontend.search');
 })->name('search');
+
+// Session Timeout Logout Route (không cần CSRF vì là timeout tự động)
+Route::get('/session-timeout', function () {
+    // Logout và clear session nếu user đang đăng nhập
+    if (Auth::check()) {
+        Auth::guard('web')->logout();
+    }
+    
+    // Invalidate và regenerate session
+    Session::invalidate();
+    Session::regenerateToken();
+    
+    // Redirect về login với thông báo
+    return redirect()->route('login')->with('session_timeout', 'Phiên làm việc đã hết hạn do không có hoạt động trong 30 giây.');
+})->name('session.timeout');
 
 // Settings Routes (Authenticated Users)
 Route::middleware(['auth'])->group(function () {
